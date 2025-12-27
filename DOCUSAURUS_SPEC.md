@@ -1,7 +1,34 @@
 # Docusaurus API Documentation Specification
 
 ## Overview
-This document outlines the specification for converting the PodPDF API documentation from `ENDPOINTS.md` to a Docusaurus-based documentation site.
+This document outlines the specification for creating user-focused API documentation for PodPDF - a PDF generation SaaS API. The documentation is designed for developers integrating PodPDF into their applications, focusing on practical usage rather than technical implementation details.
+
+## Content Principles
+
+### User-Focused Approach
+- **Focus on "how to use" not "how it works"** - Users need to know how to integrate PodPDF, not how it's built internally
+- **Remove architecture details** - No mentions of AWS services, Lambda, DynamoDB, or internal infrastructure
+- **Remove dev environment references** - No mentions of development vs production environments
+- **Emphasize practical examples** - Show real-world use cases and copy-paste ready code
+- **Clear value propositions** - Explain what each endpoint does and when to use it
+- **Simplify technical jargon** - Use plain language where possible
+
+### What to Include
+- ✅ How to authenticate and get started
+- ✅ Endpoint descriptions and usage
+- ✅ Request/response examples
+- ✅ Error handling and troubleshooting
+- ✅ Code examples in multiple languages
+- ✅ Best practices and tips
+- ✅ Plan features and pricing information
+
+### What to Exclude
+- ❌ Internal architecture (API Gateway, Lambda, etc.)
+- ❌ Database structure (DynamoDB tables)
+- ❌ Infrastructure details
+- ❌ Development environment specifics
+- ❌ Implementation details about triggers or backend processes
+- ❌ Technical stack information
 
 ## Project Structure
 
@@ -48,15 +75,15 @@ podpdf-apidocs/
 
 #### `docs/intro.md`
 - Overview of PodPDF API
-- Key features
+- Key features and use cases
 - Quick links to important sections
-- Architecture overview (API Gateway + Lambda)
+- What PodPDF can do for you
 
 #### `docs/authentication.md`
 - JWT Bearer Token authentication
-- How to obtain tokens
+- How to obtain tokens (signup and signin)
 - Token refresh flow
-- Account creation flow (Cognito Post Confirmation)
+- Account creation and setup
 
 ### 2. API Reference Pages
 
@@ -78,12 +105,11 @@ podpdf-apidocs/
 - Combined in one page with sections
 
 #### `docs/api-reference/accounts.md`
-- `POST /accounts` (legacy/optional)
-- `GET /accounts/me`
-- `PUT /accounts/me/upgrade`
-- `PUT /accounts/me/webhook`
-- `DELETE /accounts/me`
-- Organized with collapsible sections
+- `GET /accounts/me` - Get your account information
+- `PUT /accounts/me/upgrade` - Upgrade to a paid plan
+- `PUT /accounts/me/webhook` - Configure webhook URL
+- `DELETE /accounts/me` - Delete your account
+- Organized with clear sections for each operation
 
 #### `docs/api-reference/plans.md`
 - `GET /plans`
@@ -104,16 +130,17 @@ podpdf-apidocs/
 
 #### `docs/api-reference/webhooks.md`
 - Webhook payload format
-- Retry logic
+- How to receive notifications
 - Webhook configuration
-- Security considerations
+- Best practices for webhook handling
 
 ### 3. Guides Section
 
 #### `docs/guides/getting-started.md`
-- Step-by-step setup
-- First API call
-- Account creation flow
+- Step-by-step setup guide
+- Creating your first PDF
+- Account setup and authentication
+- Choosing between quick and long jobs
 
 #### `docs/guides/quick-start.md`
 - Minimal working examples
@@ -216,7 +243,7 @@ module.exports = {
 ## Content Conversion Strategy
 
 ### 1. **Endpoint Documentation Template**
-Each endpoint page should follow this structure:
+Each endpoint page should follow this structure, focusing on what users need to know:
 
 ```markdown
 # POST /quickjob
@@ -225,10 +252,10 @@ Each endpoint page should follow this structure:
 <StatusBadge status="200" />
 
 ## Description
-Brief description of the endpoint.
+Brief description of what this endpoint does and when to use it.
 
 ## Authentication
-[Authentication requirements]
+How to authenticate your requests.
 
 ## Request
 
@@ -238,7 +265,7 @@ POST /quickjob
 ```
 
 ### Headers
-[Header requirements]
+Required headers for the request.
 
 ### Request Body
 
@@ -255,15 +282,15 @@ import TabItem from '@theme/TabItem';
 </Tabs>
 
 ### Request Fields
-[Field table]
+[Field table with clear descriptions]
 
 ## Response
 
 ### Success Response
-[Response example]
+[Response example with explanations]
 
 ### Error Responses
-[Error examples]
+[Common errors and how to resolve them]
 
 ## Examples
 
@@ -273,15 +300,16 @@ import TabItem from '@theme/TabItem';
 ### JavaScript
 [JavaScript example]
 
-## Validation Rules
-[Validation details]
+## Usage Tips
+[Practical tips for using this endpoint]
 ```
 
 ### 2. **Content Enhancements**
 - Add more code examples (JavaScript, Python, etc.)
 - Add interactive examples (if using MDX)
-- Add diagrams for complex flows (authentication, webhook flow)
+- Add flow diagrams for user journeys (signup → generate PDF → receive result)
 - Add "Try it" links if API playground exists
+- Focus on practical use cases and real-world scenarios
 
 ### 3. **Cross-References**
 - Link between related endpoints
@@ -294,11 +322,11 @@ import TabItem from '@theme/TabItem';
 ### 1. **Visual Enhancements**
 - HTTP method badges (GET, POST, PUT, DELETE)
 - Status code badges with color coding:
-  - 2xx: Green
-  - 4xx: Yellow/Orange
-  - 5xx: Red
+  - 2xx: Green (Success)
+  - 4xx: Yellow/Orange (Client Error)
+  - 5xx: Red (Server Error)
 - Authentication required indicators
-- Rate limit indicators
+- Plan tier indicators (Free vs Paid features)
 
 ### 2. **Responsive Design**
 - Mobile-friendly tables
@@ -319,11 +347,12 @@ import TabItem from '@theme/TabItem';
 - [ ] Configure theme and branding
 
 ### Phase 2: Content Migration
-- [ ] Convert intro/overview content
-- [ ] Convert authentication documentation
-- [ ] Convert all API endpoint pages
-- [ ] Convert webhook documentation
-- [ ] Create guides section
+- [ ] Convert intro/overview content (remove architecture details)
+- [ ] Convert authentication documentation (focus on user flow)
+- [ ] Convert all API endpoint pages (remove technical implementation details)
+- [ ] Convert webhook documentation (focus on integration, not retry logic details)
+- [ ] Create guides section with practical examples
+- [ ] Review all content to ensure it's user-focused, not developer-focused
 
 ### Phase 3: Enhancement
 - [ ] Add tabs for multiple examples
@@ -418,13 +447,14 @@ import TabItem from '@theme/TabItem';
 
 ## Success Metrics
 
-- All 18 endpoints documented
-- All authentication flows documented
-- Webhook documentation complete
+- All API endpoints clearly documented with examples
+- Authentication and account setup clearly explained
+- Webhook integration guide complete
 - Search functionality working
 - Mobile-responsive design
 - Fast page load times
-- Good SEO (if public)
+- Clear, actionable examples for common use cases
+- Users can successfully integrate PodPDF without confusion
 
 ## Timeline Estimate
 
