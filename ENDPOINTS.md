@@ -15,22 +15,41 @@ Synchronous PDF generation for small documents that complete in under 30 seconds
 
 ### 1.1 Authentication
 
-- **Type:** JWT Bearer Token (Amazon Cognito)
-- **Header:**
+- **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Note:** No API Gateway authorizer is used. Authentication is handled directly in Lambda to support both JWT and API key.
+- **Headers (choose one):**
 
+**Option 1: JWT Token (ID Token)**
 ```http
-Authorization: Bearer <jwt_token>
+Authorization: Bearer <id_token>
+```
+
+**Option 2: API Key**
+```http
+X-API-Key: <api_key>
+```
+or
+```http
+Authorization: Bearer <api_key>
 ```
 
 **Requirements:**
-- Token must be valid and not expired.
+- Either a valid JWT token or a valid API key must be provided.
+- **JWT Token Requirements:**
+  - Must be the **ID token** (not access token) from Cognito `/signin` response
+  - Token is verified directly in Lambda against Cognito JWKS (public keys)
+  - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+- **API Key Requirements:**
+  - API key must be active and not revoked
+  - API keys start with `pk_live_` or `pk_test_`
 - User account must exist in `Users` (no anonymous or first-call auto-account creation).
+- **Note:** If both are provided, API key takes precedence.
 
 ### 1.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/quickjob`  
-**Content-Type:** `application/json`
+**Content-Type:** `application/json` (for HTML/Markdown) or `multipart/form-data` (for Images)
 
 #### 1.2.1 Request Body (HTML)
 
@@ -72,8 +91,47 @@ Authorization: Bearer <jwt_token>
 }
 ```
 
-#### 1.2.3 Request Fields
+#### 1.2.3 Request Body (Images - Multipart)
 
+**Content-Type:** `multipart/form-data`
+
+```bash
+# cURL example
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "Authorization: Bearer <token>" \
+  -F "input_type=image" \
+  -F "images=@photo1.png" \
+  -F "images=@photo2.jpg" \
+  -F 'options={"format":"A4","fit":"contain"}'
+```
+
+```javascript
+// JavaScript/Browser example
+const formData = new FormData();
+formData.append('input_type', 'image');
+formData.append('images', file1);  // File object from input[type=file]
+formData.append('images', file2);
+formData.append('options', JSON.stringify({
+  format: 'A4',
+  margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+  fit: 'contain'
+}));
+
+const response = await fetch('/quickjob', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: formData
+});
+```
+
+**Form Fields:**
+- `input_type` (string, required): Must be `"image"`
+- `images` (file, required): One or more image files (PNG or JPEG). Repeat field for multiple images.
+- `options` (string, optional): JSON string with PDF options
+
+#### 1.2.4 Request Fields
+
+**For HTML/Markdown (JSON):**
 - `input_type` (string, required)
   - Must be `"html"` or `"markdown"`.
 - `html` (string, required if `input_type` is `"html"`)
@@ -89,27 +147,57 @@ Authorization: Bearer <jwt_token>
     - `landscape` (boolean): default `false`.
     - `preferCSSPageSize` (boolean): default `false`.
 
+**For Images (Multipart):**
+- `input_type` (string, required): Must be `"image"`
+- `images` (file, required): One or more PNG/JPEG image files
+- `options` (string, optional): JSON string with options:
+  - `format` (string): Page size `"A4"`, `"Letter"`, etc. Default: `"A4"`
+  - `margin` (object): `top`, `right`, `bottom`, `left` (e.g., `"10mm"`). Default: `10mm` all sides
+  - `fit` (string): How to fit image on page:
+    - `"contain"` (default): Fit whole image, maintain aspect ratio
+    - `"cover"`: Fill entire page, may crop
+    - `"fill"`: Stretch to fill (may distort)
+    - `"none"`: Use natural size
+  - `landscape` (boolean): Page orientation. Default: `false`
+
+**Image Limits:**
+- Maximum 5MB per image
+- Maximum 10MB total payload
+- Maximum 10000x10000 pixels per image
+- Maximum images per request: Same as page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error (no truncation).
+
 ### 1.3 Validation Rules (Summary)
 
 1. **Authentication**
-   - JWT must be present and valid, or request is rejected with **401** (`UNAUTHORIZED`).
+   - Either JWT token or API key must be present and valid, or request is rejected with **401** (`UNAUTHORIZED`).
+   - If API key is used, it must be active and not revoked.
 
 2. **Account**
    - `Users` record must exist for the `sub`; otherwise **403** (`ACCOUNT_NOT_FOUND`).
 
-3. **Body**
+3. **Body (HTML/Markdown - JSON)**
    - `input_type` must be `"html"` or `"markdown"`.
    - Exactly one of `html` or `markdown` must be provided (non-empty).
    - Content must match `input_type` (basic starting-tag check).
    - Input size must be ≤ ~5 MB.
 
-4. **Business Logic**
+4. **Body (Images - Multipart)**
+   - `input_type` must be `"image"`.
+   - At least one image file must be provided in the `images` field.
+   - Each image must be PNG or JPEG format.
+   - Each image must be ≤ 5 MB.
+   - Total payload must be ≤ 10 MB.
+   - Image dimensions must be ≤ 10000x10000 pixels.
+   - Image count must not exceed page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error before conversion.
+
+5. **Business Logic**
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
      - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
-   - **Page Limit:** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
+   - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
+   - **Page Limit (Images):** Same maximum page limit as HTML/Markdown (e.g., 2 pages in dev, 100 pages in prod). Each image = 1 page. The image count is checked **before conversion**. If the image count exceeds the page limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
 
 ### 1.4 Response
 
@@ -122,6 +210,7 @@ Authorization: Bearer <jwt_token>
 Content-Type: application/pdf
 Content-Disposition: inline; filename="document.pdf"
 X-PDF-Pages: 42
+X-PDF-Truncated: false
 X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 ```
 
@@ -129,8 +218,8 @@ X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 
 **Notes:**
 - Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod).
-- If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`).
-- No truncation is performed - the entire request is rejected if the limit is exceeded.
+- **For HTML/Markdown:** If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
+- **For Images:** The image count is checked **before conversion** (1 image = 1 page). If the image count exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
 
 #### 1.4.2 Timeout Response
 
@@ -164,9 +253,18 @@ Common error statuses:
   - Content type mismatch
   - Input size exceeds limit
   - PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`)
+  - **Image-specific errors:**
+    - `INVALID_IMAGE_FORMAT` - Image is not PNG or JPEG
+    - `INVALID_IMAGE_DATA` - Image is corrupted or invalid
+    - `IMAGE_TOO_LARGE` - Image exceeds 5MB or 10000x10000 pixels
+    - `MISSING_IMAGES` - No image files in multipart request
+    - `INVALID_MULTIPART` - Malformed multipart/form-data request
+    - `INVALID_OPTIONS_JSON` - Options field is not valid JSON
 
 - `401 Unauthorized`
-  - Missing or invalid JWT
+  - Missing or invalid authentication (neither valid JWT nor API key provided)
+  - JWT token is expired, malformed, or not an ID token
+  - API key is invalid, revoked, or inactive
 
 - `403 Forbidden`
   - Account not found (`ACCOUNT_NOT_FOUND`)
@@ -191,18 +289,39 @@ For full error payload examples and codes, see `ERRORS.md`.
 **Description:**  
 Asynchronous PDF generation with queueing, S3 storage, and webhook notifications. Use for larger documents or when you need webhook callbacks.
 
+**Note:** Image uploads (multipart/form-data) are **not supported** in `/longjob`. Use `/quickjob` for image-to-PDF conversion - images process fast enough (~0.5-2s per image) to complete within the 30-second timeout.
+
 ### 2.1 Authentication
 
-- **Type:** JWT Bearer Token (Amazon Cognito)
-- **Header:**
+- **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Note:** No API Gateway authorizer is used. Authentication is handled directly in Lambda to support both JWT and API key.
+- **Headers (choose one):**
 
+**Option 1: JWT Token (ID Token)**
 ```http
-Authorization: Bearer <jwt_token>
+Authorization: Bearer <id_token>
+```
+
+**Option 2: API Key**
+```http
+X-API-Key: <api_key>
+```
+or
+```http
+Authorization: Bearer <api_key>
 ```
 
 **Requirements:**
-- Token must be valid and not expired.
+- Either a valid JWT token or a valid API key must be provided.
+- **JWT Token Requirements:**
+  - Must be the **ID token** (not access token) from Cognito `/signin` response
+  - Token is verified directly in Lambda against Cognito JWKS (public keys)
+  - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+- **API Key Requirements:**
+  - API key must be active and not revoked
+  - API keys start with `pk_live_` or `pk_test_`
 - User account must exist in `Users`.
+- **Note:** If both are provided, API key takes precedence.
 
 ### 2.2 HTTP Request
 
@@ -353,6 +472,7 @@ Authorization: Bearer <jwt_token>
   "created_at": "2025-12-21T10:30:00Z",
   "completed_at": "2025-12-21T10:30:05Z",
   "timeout_occurred": false,
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "error_message": null
 }
 ```
@@ -411,7 +531,7 @@ Authorization: Bearer <jwt_token>
 - `job_id` (string): UUID of the job.
 - `status` (string): `"queued"`, `"processing"`, `"completed"`, `"failed"`, or `"timeout"` (quick jobs only).
 - `job_type` (string): `"quick"` or `"long"`.
-- `mode` (string): `"html"` or `"markdown"`.
+- `mode` (string): `"html"`, `"markdown"`, or `"image"`.
 - `pages` (number, optional): Number of pages in the returned PDF (present when completed).
 - `truncated` (boolean, optional): Always `false` (truncation is no longer performed; requests exceeding page limit are rejected).
 - `created_at` (string): ISO 8601 timestamp.
@@ -422,6 +542,7 @@ Authorization: Bearer <jwt_token>
 - `webhook_delivered_at` (string, optional): ISO 8601 timestamp when webhook was delivered.
 - `webhook_retry_count` (number, optional): Number of webhook retry attempts (0-3).
 - `timeout_occurred` (boolean, optional): `true` if quick job exceeded 30-second timeout.
+- `api_key_id` (string, ULID, optional): The API key ID used for this job. `null` if JWT authentication was used.
 - `error_message` (string, optional): Error message if status is `"failed"` or `"timeout"`.
 
 #### 3.3.2 Error Responses
@@ -1522,7 +1643,211 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 14. Health Check (Optional, Internal)
+## 14. API Key Management
+
+The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
+
+**Important:** All API key management endpoints require JWT authentication (not API key). This prevents API key self-revocation loops and ensures only authenticated users can manage their keys.
+
+---
+
+### 14.1 `POST /accounts/me/api-keys`
+
+**Description:**  
+Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
+
+#### 14.1.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.1.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/accounts/me/api-keys`  
+**Content-Type:** `application/json`
+
+**Request Body:**
+```json
+{
+  "name": "Production API Key"
+}
+```
+
+**Fields:**
+- `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
+
+#### 14.1.3 Response
+
+**Success Response (201 Created):**
+```json
+{
+  "api_key": "pk_live_abc123xyz...",
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "name": "Production API Key",
+  "created_at": "2025-12-21T10:00:00Z",
+  "message": "API key created successfully. Store this key securely - it will not be shown again."
+}
+```
+
+**Fields:**
+- `api_key` (string): The full API key. **This is the only time the full key is returned.** Store it securely.
+- `api_key_id` (string, ULID): Unique identifier for the API key. Use this for revoking the key and for tracking in job records.
+- `name` (string, optional): The name assigned to the API key.
+- `created_at` (string): ISO 8601 timestamp when the key was created.
+- `message` (string): Reminder message about storing the key securely.
+
+**API Key Format:**
+- Production keys: `pk_live_<random_base64url_string>` (43 characters after prefix)
+- Development keys: `pk_test_<random_base64url_string>` (43 characters after prefix)
+
+**Error Responses:**
+- `400 Bad Request` – Invalid JSON in request body.
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+---
+
+### 14.2 `GET /accounts/me/api-keys`
+
+**Description:**  
+List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
+
+#### 14.2.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.2.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/api-keys`
+
+#### 14.2.3 Response
+
+**Success Response (200 OK):**
+```json
+{
+  "api_keys": [
+    {
+      "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "api_key_prefix": "pk_live_abc1...",
+      "name": "Production API Key",
+      "is_active": true,
+      "created_at": "2025-12-21T10:00:00Z",
+      "last_used_at": "2025-12-21T15:30:00Z",
+      "revoked_at": null
+    },
+    {
+      "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      "api_key_prefix": "pk_test_xyz9...",
+      "name": "Development API Key",
+      "is_active": false,
+      "created_at": "2025-12-20T08:00:00Z",
+      "last_used_at": "2025-12-20T12:00:00Z",
+      "revoked_at": "2025-12-21T09:00:00Z"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Fields:**
+- `api_keys` (array): List of API keys, sorted by `created_at` descending (newest first).
+  - `api_key_id` (string, ULID): Unique identifier for the API key. Use this for revoking and tracking.
+  - `api_key_prefix` (string): First 12 characters of the API key followed by `...` (for identification only).
+  - `name` (string, optional): Descriptive name for the API key.
+  - `is_active` (boolean): Whether the API key is active (`false` if revoked).
+  - `created_at` (string): ISO 8601 timestamp when the key was created.
+  - `last_used_at` (string, optional): ISO 8601 timestamp when the key was last used (null if never used).
+  - `revoked_at` (string, optional): ISO 8601 timestamp when the key was revoked (null if active).
+- `count` (number): Total number of API keys (active and revoked).
+
+**Error Responses:**
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+---
+
+### 14.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+
+**Description:**  
+Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
+
+#### 14.3.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.3.2 HTTP Request
+
+**Method:** `DELETE`  
+**Path:** `/accounts/me/api-keys/{api_key_id}`
+
+**Path Parameters:**
+- `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
+
+#### 14.3.3 Response
+
+**Success Response (200 OK):**
+```json
+{
+  "message": "API key revoked successfully",
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "api_key_prefix": "pk_live_abc1...",
+  "revoked_at": "2025-12-21T10:00:00Z"
+}
+```
+
+**Fields:**
+- `message` (string): Confirmation message.
+- `api_key_id` (string, ULID): The ID of the revoked API key.
+- `api_key_prefix` (string): First 12 characters of the revoked API key followed by `...`.
+- `revoked_at` (string): ISO 8601 timestamp when the key was revoked.
+
+**Error Responses:**
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`) or API key does not belong to authenticated user.
+- `404 Not Found` – API key not found.
+- `500 Internal Server Error` – Server-side failure.
+
+**Notes:**
+- Revoked API keys cannot be reactivated. Create a new API key if needed.
+- Revoked keys remain in the list (with `is_active: false`) for audit purposes.
+- The API key must belong to the authenticated user. Attempting to revoke another user's key will result in a `403 Forbidden` error.
+
+---
+
+## 15. Health Check (Optional, Internal)
 
 > **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
 
@@ -1553,12 +1878,12 @@ Implementation of `/health` is left to the service owner and may be internal-onl
 
 ---
 
-## 15. `POST /signup`
+## 16. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
 
-### 12.1 Authentication
+### 17.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to create new user accounts.
@@ -1714,7 +2039,7 @@ curl -X POST https://api.podpdf.com/signup \
 
 ---
 
-## 16. `POST /confirm-signup`
+## 17. `POST /confirm-signup`
 
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
@@ -1869,7 +2194,7 @@ curl -X POST https://api.podpdf.com/confirm-signup \
 
 ---
 
-## 17. `POST /signin`
+## 18. `POST /signin`
 
 **Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
@@ -2004,7 +2329,7 @@ curl -X POST https://api.podpdf.com/signin \
 
 ---
 
-## 18. `POST /refresh`
+## 19. `POST /refresh`
 
 **Description:**  
 Refresh authentication tokens using a refresh token. Returns new ID token and access token.
