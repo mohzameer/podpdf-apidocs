@@ -19,7 +19,7 @@ podpdf-apidocs/
     ├── README.md          📖 Asset usage guide
     └── img/
         ├── .gitkeep       🔧 Git tracking
-        ├── logo.svg       🎨 Placeholder logo
+        ├── logo.png       🎨 Placeholder logo
         └── favicon.ico    🎨 Placeholder favicon
 ```
 
@@ -71,7 +71,7 @@ Then follow `DOCUSAURUS_SPEC.md` to create content!
 # Keep the same filenames or update docusaurus.config.js
 
 cd static/img/
-# Replace logo.svg with your logo
+# Replace logo.png with your logo
 # Replace favicon.ico with your favicon
 ```
 

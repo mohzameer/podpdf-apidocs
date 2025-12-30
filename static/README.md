@@ -4,18 +4,19 @@ This directory contains static assets for the PodPDF API documentation site.
 
 ## Current Files
 
-### `img/logo.svg`
-Placeholder logo for the navbar. This is a simple blue SVG with "PodPDF" text.
+### `img/logo.png`
+Placeholder logo for the navbar. This is a simple blue PNG with "PodPDF" text.
 
 **To replace:**
-- Create your brand logo as SVG (recommended) or PNG
+- Create your brand logo as PNG or SVG
 - Replace this file with your logo
-- Keep the same filename (`logo.svg`) or update `docusaurus.config.js`
+- Keep the same filename (`logo.png`) or update `docusaurus.config.js`
 
 **Recommended specs:**
-- Format: SVG (scalable) or PNG
-- Size: ~200x60px or similar aspect ratio
+- Format: PNG (with transparency) or SVG
+- Size: 200x60px or similar aspect ratio (high-DPI: 400x120px @2x)
 - Transparent background recommended
+- Optimize/compress before adding
 
 ### `img/favicon.ico`
 Placeholder favicon for browser tabs.
@@ -34,10 +35,10 @@ The Docusaurus configuration (`docusaurus.config.js`) references these files:
 module.exports = {
   themeConfig: {
     navbar: {
-      title: 'PodPDF API',
+      title: '', // No title - logo only
       logo: {
         alt: 'PodPDF Logo',
-        src: 'img/logo.svg',
+        src: 'img/logo.png',
       },
     },
   },

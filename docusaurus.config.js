@@ -59,24 +59,12 @@ const config = {
       // Replace with your project's social card
       image: 'img/docusaurus-social-card.jpg',
       navbar: {
-        title: 'PodPDF API',
+        title: 'API Docs',
         logo: {
           alt: 'PodPDF Logo',
-          src: 'img/logo.svg',
+          src: 'img/logo.png',
         },
-        items: [
-          {
-            type: 'docSidebar',
-            sidebarId: 'tutorialSidebar',
-            position: 'left',
-            label: 'Documentation',
-          },
-          {
-            href: 'https://github.com/podpdf/podpdf',
-            label: 'GitHub',
-            position: 'right',
-          },
-        ],
+        items: [],
       },
       footer: {
         style: 'dark',
@@ -91,15 +79,6 @@ const config = {
               {
                 label: 'API Reference',
                 to: '/api-reference/quickjob',
-              },
-            ],
-          },
-          {
-            title: 'More',
-            items: [
-              {
-                label: 'GitHub',
-                href: 'https://github.com/podpdf/podpdf',
               },
             ],
           },

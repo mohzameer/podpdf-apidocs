@@ -67,7 +67,7 @@ podpdf-apidocs/
 │       └── custom.css            # Custom styling
 └── static/                        # Static assets
     └── img/
-        ├── logo.svg              # Brand logo (placeholder provided)
+        ├── logo.png              # Brand logo (placeholder provided)
         ├── favicon.ico           # Site favicon (placeholder provided)
         └── .gitkeep              # Keeps directory in git
 ```
@@ -456,7 +456,7 @@ module.exports = {
       title: 'PodPDF API',
       logo: {
         alt: 'PodPDF Logo',
-        src: 'img/logo.svg',
+        src: 'img/logo.png',
         // If logo doesn't exist, title will be displayed
       },
       items: [
@@ -817,7 +817,7 @@ import TabItem from '@theme/TabItem';
 ### Included Placeholder Files
 The following placeholder files are provided in `static/img/`:
 
-1. **`logo.svg`** - Placeholder logo (200x200 blue SVG with "PodPDF" text)
+1. **`logo.png`** - Placeholder logo (200x60 blue PNG with "PodPDF" text)
 2. **`favicon.ico`** - Placeholder favicon file
 3. **`.gitkeep`** - Ensures directory is tracked in git
 
@@ -829,13 +829,13 @@ The following placeholder files are provided in `static/img/`:
 navbar: {
   logo: {
     alt: 'PodPDF Logo',
-    src: 'img/logo.svg', // Uses placeholder
+    src: 'img/logo.png', // Uses placeholder
   },
 }
 ```
 
 **Option 2: Replace with your brand assets**
-1. Replace `static/img/logo.svg` with your brand logo
+1. Replace `static/img/logo.png` with your brand logo
 2. Replace `static/img/favicon.ico` with your favicon
 3. Keep same filenames - no config changes needed
 

@@ -69,7 +69,7 @@ static/
 ├── README.md              # Usage guide for static assets
 └── img/
     ├── .gitkeep          # Ensures git tracking
-    ├── logo.svg          # Placeholder logo (blue SVG)
+    ├── logo.png          # Placeholder logo (blue PNG)
     └── favicon.ico       # Placeholder favicon
 ```
 
@@ -142,7 +142,7 @@ presets: [
 **Example Configuration:**
 ```javascript
 // Option 1: Use placeholder
-logo: { src: 'img/logo.svg' }
+logo: { src: 'img/logo.png' }
 
 // Option 2: Text-only (no logo needed)
 title: 'PodPDF API'
@@ -178,7 +178,7 @@ title: 'PodPDF API'
 ## What's Included
 
 ### Placeholder Assets
-- ✅ `static/img/logo.svg` - Blue SVG placeholder logo
+- ✅ `static/img/logo.png` - Blue PNG placeholder logo
 - ✅ `static/img/favicon.ico` - Placeholder favicon
 - ✅ `static/img/.gitkeep` - Git tracking
 - ✅ `static/README.md` - Asset usage guide
