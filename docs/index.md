@@ -78,7 +78,7 @@ Browse all available endpoints and features.
 ### 🎯 Two Generation Modes
 
 **QuickJob** - Instant synchronous generation  
-Perfect for small documents (< 30 seconds, up to 100 pages)  
+Perfect for simple documents (up to 25 pages maximum, < 30 seconds)  
 [Learn more →](/api-reference/quickjob)
 
 **LongJob** - Asynchronous with webhooks  

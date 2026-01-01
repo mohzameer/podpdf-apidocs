@@ -7,16 +7,16 @@ Generate PDFs asynchronously with queueing and webhook notifications. Use this e
 The `/longjob` endpoint processes PDF generation asynchronously. Your job is queued and processed in the background. When complete, you'll receive a webhook notification (if configured) and can retrieve the PDF from a temporary URL.
 
 **When to use `/longjob`:**
-- For larger documents that may take longer than 30 seconds
+- For larger documents (more than 25 pages) that may take longer than 30 seconds
 - When you want webhook notifications when the PDF is ready
 - For documents that need to be stored and accessed later
 - When you don't need the PDF immediately in the response
 
 **When to use `/quickjob` instead:**
-- For small documents that complete quickly
+- For simple documents (up to 25 pages maximum) that complete quickly
 - When you need the PDF immediately in the response
 - For real-time PDF generation
-- **For converting images to PDF** (images not supported in LongJob)
+- **For converting images to PDF** (images not supported in LongJob, up to 25 images maximum)
 
 :::warning Image Support
 LongJob does **NOT** support image uploads (multipart/form-data). Use `/quickjob` for image-to-PDF conversion. Images process fast enough (~0.5-2s per image) to complete within the 30-second QuickJob timeout.

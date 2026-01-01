@@ -123,12 +123,13 @@ curl -X POST https://api.podpdf.com/quickjob \
 ## Choosing Between QuickJob and LongJob
 
 ### Use `/quickjob` when:
-- ✅ Document is small (< 10 pages)
+- ✅ Document is simple and small (up to 25 pages maximum)
 - ✅ Need PDF immediately (< 30 seconds)
 - ✅ Synchronous workflow fits your needs
+- ✅ Converting images to PDF (up to 25 images maximum)
 
 ### Use `/longjob` when:
-- ✅ Document is large (> 10 pages)
+- ✅ Document is large (more than 25 pages)
 - ✅ Can wait for generation (async)
 - ✅ Want webhook notifications when complete
 

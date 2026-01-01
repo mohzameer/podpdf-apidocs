@@ -4,18 +4,18 @@ sidebar_position: 1
 
 # POST /quickjob
 
-Generate PDFs instantly (< 30 seconds) - Perfect for small documents.
+Generate PDFs instantly (< 30 seconds) - Perfect for simple documents (up to 25 pages maximum).
 
 ## When to Use
 
 ✅ **Use QuickJob when:**
-- Document is small (< 10 pages / 10 images)
+- Document is simple and small (up to 25 pages maximum)
 - Need PDF immediately
 - Synchronous workflow
-- Converting images to PDF
+- Converting images to PDF (up to 25 images maximum)
 
 ❌ **Use LongJob instead when:**
-- Document is large (> 10 pages)
+- Document is large (more than 25 pages)
 - Can use async processing
 - Want webhook notifications
 
@@ -445,7 +445,7 @@ if ($httpCode == 200) {
 - Keep HTML under 5MB for best performance
 - Include all CSS inline in your HTML
 - Test with small documents first
-- Use quickjob for documents under 10 pages or 10 images
+- Use quickjob for simple documents (up to 25 pages or 25 images maximum)
 - Handle timeout errors gracefully
 - Store API keys in environment variables
 - **Images:** Use PNG or JPEG format, keep under 5MB each
