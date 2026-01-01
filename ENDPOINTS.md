@@ -191,9 +191,10 @@ const response = await fetch('/quickjob', {
    - Image count must not exceed page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error before conversion.
 
 5. **Business Logic**
+   - **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. If the plan does not have `enabled_conversion_types` configured (or it's `null` or empty), all conversion types are allowed (backward compatible).
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
-     - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
+     - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
    - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
@@ -268,6 +269,7 @@ Common error statuses:
 
 - `403 Forbidden`
   - Account not found (`ACCOUNT_NOT_FOUND`)
+  - Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`)
   - Per-user rate limit exceeded for free tier (`RATE_LIMIT_EXCEEDED`)
   - Free tier quota exhausted (`QUOTA_EXCEEDED`)
 
@@ -390,6 +392,7 @@ Authorization: Bearer <api_key>
 
 Same validation as `/quickjob` (authentication, account, body, business logic), plus:
 
+- **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. Note: Image conversion type is not supported in `/longjob` (returns `400 Bad Request` before conversion type validation).
 - **Page Limit Check:** The PDF is generated synchronously before queuing to validate the page count. If the page limit is exceeded, the request is rejected immediately with `400 Bad Request` (`PAGE_LIMIT_EXCEEDED`). The job is only queued if the page limit check passes.
 - `webhook_url` (if provided) must be a valid HTTPS URL.
 
@@ -421,6 +424,7 @@ Same validation as `/quickjob` (authentication, account, body, business logic), 
 Same error responses as `/quickjob` (400, 401, 403, 429, 500), plus:
 - `400 Bad Request` – Invalid `webhook_url` (not HTTPS or malformed URL).
 - `400 Bad Request` – PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`). **This error is returned immediately before queuing the job.** No job record is created and no webhook will be sent.
+- `403 Forbidden` – Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`). **This error is returned before queuing the job.** No job record is created and no webhook will be sent.
 
 **Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
 
@@ -551,6 +555,113 @@ Authorization: Bearer <jwt_token>
 - `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
 - `404 Not Found` – Job not found or doesn't belong to authenticated user.
 - `500 Internal Server Error` – Server-side failure.
+
+---
+
+## 3.4 `GET /jobs/{job_id}/webhooks/history`
+
+**Description:**  
+Get webhook delivery history for a specific job. Shows all webhook deliveries (across all webhooks) that were triggered for this job.
+
+### 3.4.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired
+- User account must exist in `Users` table
+- Job must belong to authenticated user
+
+### 3.4.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/jobs/{job_id}/webhooks/history`
+
+**Path Parameters:**
+- `job_id` (string, required) - Job identifier (UUID)
+
+#### 3.4.3 Query Parameters
+
+- `status` (string, optional) - Filter by delivery status
+  - Valid values: `success`, `failed`, `timeout`
+- `event_type` (string, optional) - Filter by event type
+  - Valid values: `job.completed`, `job.failed`, `job.timeout`, `job.queued`, `job.processing`
+- `limit` (number, optional) - Maximum results (default: 50, max: 100)
+- `next_token` (string, optional) - Pagination token from previous response
+
+### 3.4.4 Response
+
+#### 3.4.4.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "history": [
+    {
+      "delivery_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "event_type": "job.completed",
+      "status": "success",
+      "status_code": 200,
+      "retry_count": 0,
+      "delivered_at": "2025-12-24T15:30:00Z",
+      "duration_ms": 245,
+      "payload_size_bytes": 1024,
+      "url": "https://api.example.com/webhooks/podpdf"
+    },
+    {
+      "delivery_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+      "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      "event_type": "job.completed",
+      "status": "failed",
+      "status_code": 500,
+      "error_message": "HTTP 500",
+      "retry_count": 3,
+      "delivered_at": "2025-12-24T15:30:05Z",
+      "duration_ms": 7500,
+      "payload_size_bytes": 1024,
+      "url": "https://api.example.com/webhooks/podpdf-staging"
+    }
+  ],
+  "count": 2,
+  "next_token": null
+}
+```
+
+**Fields:**
+- `job_id` (string) - Job identifier
+- `history` (array) - List of webhook delivery records for this job
+  - `delivery_id` (string) - Unique delivery identifier (ULID)
+  - `webhook_id` (string) - Webhook ID that was called
+  - `event_type` (string) - Event type that triggered webhook
+  - `status` (string) - Delivery status: `success`, `failed`, or `timeout`
+  - `status_code` (number, optional) - HTTP status code from webhook endpoint
+  - `error_message` (string, optional) - Error message if delivery failed
+  - `retry_count` (number) - Number of retry attempts (0-3)
+  - `delivered_at` (string) - ISO 8601 timestamp when delivery completed
+  - `duration_ms` (number) - Total delivery duration in milliseconds
+  - `payload_size_bytes` (number) - Size of webhook payload in bytes
+  - `url` (string) - Webhook URL that was called (snapshot at time of delivery)
+- `count` (number) - Number of history records in this response
+- `next_token` (string, optional) - Pagination token for next page (null if last page)
+
+**Note:** History records are automatically deleted after 90 days (TTL).
+
+#### 3.4.4.2 Error Responses
+
+- `401 Unauthorized` - Missing or invalid JWT token
+- `404 Not Found` - Job not found or doesn't belong to authenticated user
+  - Error code: `JOB_NOT_FOUND`
+- `500 Internal Server Error` - Server-side failure
 
 ---
 
@@ -840,10 +951,11 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "plan_id": "free-basic",
       "name": "Free Basic",
       "type": "free",
-      "monthly_quota": 100,
+      "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
-      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "enabled_conversion_types": ["html"],
+      "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
     {
@@ -851,9 +963,11 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "name": "Paid Standard",
       "type": "paid",
       "monthly_quota": null,
-      "price_per_pdf": 0.005,
+      "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
-      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "enabled_conversion_types": ["html", "markdown"],
+      "max_webhooks": 5,
+      "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
   ],
@@ -872,6 +986,8 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 - `monthly_quota` (number|null) - Number of PDFs included per month for free plans, `null` for unlimited paid plans
 - `price_per_pdf` (number) - Price per PDF in USD (0 for free plans)
 - `rate_limit_per_minute` (number|null) - Per-user rate limit in requests per minute, `null` for unlimited
+- `enabled_conversion_types` (array|null) - List of conversion types enabled for this plan. Valid values: `"html"`, `"markdown"`, `"image"`. If `null` or not specified, all conversion types are enabled (backward compatible).
+- `max_webhooks` (number|null) - Maximum number of webhooks allowed for this plan. Defaults to `1` for free plans and `5` for paid plans if not specified. `null` indicates unlimited (for enterprise plans).
 - `description` (string|null) - Plan description
 - `is_active` (boolean) - Whether the plan is active and available
 
@@ -883,10 +999,12 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
     "plan_id": "free-basic",
     "name": "Free Basic",
     "type": "free",
-    "monthly_quota": 100,
+    "monthly_quota": 50,
     "price_per_pdf": 0,
     "rate_limit_per_minute": 20,
-    "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+    "enabled_conversion_types": ["html"],
+    "max_webhooks": 1,
+    "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
     "is_active": true
   }
 }
@@ -939,10 +1057,12 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "plan_id": "free-basic",
       "name": "Free Basic",
       "type": "free",
-      "monthly_quota": 100,
+      "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
-      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "enabled_conversion_types": ["html"],
+      "max_webhooks": 1,
+      "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
     {
@@ -950,9 +1070,11 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "name": "Paid Standard",
       "type": "paid",
       "monthly_quota": null,
-      "price_per_pdf": 0.005,
+      "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
-      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "enabled_conversion_types": ["html", "markdown"],
+      "max_webhooks": 5,
+      "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
   ],
@@ -968,9 +1090,11 @@ curl -X GET https://api.podpdf.com/plans/free-basic
     "name": "Paid Standard",
     "type": "paid",
     "monthly_quota": null,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "rate_limit_per_minute": null,
-    "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+    "enabled_conversion_types": ["html", "markdown"],
+    "max_webhooks": 5,
+    "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
     "is_active": true
   }
 }
@@ -984,6 +1108,7 @@ curl -X GET https://api.podpdf.com/plans/free-basic
 - **Null Values:** Some fields may be `null`:
   - `monthly_quota`: `null` for paid plans (unlimited)
   - `rate_limit_per_minute`: `null` for paid plans (unlimited) or plans without rate limits
+  - `max_webhooks`: `null` for enterprise plans (unlimited), defaults to `1` for free and `5` for paid if not specified
   - `description`: `null` if no description is set
 - **Plan Types:**
   - `"free"`: Free tier plans with quota limits
@@ -1014,7 +1139,7 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users`.
 
-### 14.2 HTTP Request
+### 8.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me`
@@ -1044,7 +1169,7 @@ Authorization: Bearer <jwt_token>
     "plan_id": "free-basic",
     "name": "Free Basic",
     "type": "free",
-    "monthly_quota": 100,
+    "monthly_quota": 50,
     "price_per_pdf": 0,
     "rate_limit_per_minute": 20
   }
@@ -1115,7 +1240,7 @@ Authorization: Bearer <jwt_token>
     "billing_month": "2025-12",
     "monthly_billing_amount": 0.125,
     "pdf_count": 25,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "is_paid": false
   }
 }
@@ -1171,7 +1296,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
     "billing_month": "2025-12",
     "monthly_billing_amount": 0.125,
     "pdf_count": 25,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "is_paid": false
   }
 }
@@ -1209,7 +1334,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
 ## 10. `GET /accounts/me/bills`
 
 **Description:**  
-Get a list of all bills/invoices for the authenticated user. Returns all monthly billing records sorted by month (most recent first).
+Get a list of all bills/invoices for the authenticated user. Returns all monthly billing records (both active and inactive) sorted by month (most recent first). All bill history is preserved in the same table, with the `is_active` field indicating whether a bill is for the current month.
 
 ### 8.1 Authentication
 
@@ -1248,6 +1373,7 @@ Authorization: Bearer <jwt_token>
       "monthly_pdf_count": 25,
       "monthly_billing_amount": 0.125,
       "is_paid": false,
+      "is_active": true,
       "bill_id": null,
       "invoice_id": null,
       "paid_at": null,
@@ -1259,6 +1385,7 @@ Authorization: Bearer <jwt_token>
       "monthly_pdf_count": 150,
       "monthly_billing_amount": 0.75,
       "is_paid": true,
+      "is_active": false,
       "bill_id": "bill_abc123",
       "invoice_id": "inv_xyz789",
       "paid_at": "2025-12-05T14:20:00Z",
@@ -1270,6 +1397,7 @@ Authorization: Bearer <jwt_token>
       "monthly_pdf_count": 80,
       "monthly_billing_amount": 0.40,
       "is_paid": true,
+      "is_active": false,
       "bill_id": "bill_def456",
       "invoice_id": "inv_uvw012",
       "paid_at": "2025-11-03T09:15:00Z",
@@ -1297,6 +1425,7 @@ Authorization: Bearer <jwt_token>
   - `monthly_pdf_count` (number): Number of PDFs generated in this month.
   - `monthly_billing_amount` (number): Total amount for this month in USD.
   - `is_paid` (boolean): Whether the bill has been paid.
+  - `is_active` (boolean): Whether this bill is for the current month (`true`) or a previous month (`false`). Bills are marked as inactive when a new month begins.
   - `bill_id` (string, optional): External bill ID (e.g., from payment processor).
   - `invoice_id` (string, optional): Invoice ID from payment processor.
   - `paid_at` (string, optional): ISO 8601 timestamp when bill was marked as paid.
@@ -1328,6 +1457,7 @@ curl -X GET https://api.podpdf.com/accounts/me/bills \
       "monthly_pdf_count": 25,
       "monthly_billing_amount": 0.125,
       "is_paid": false,
+      "is_active": true,
       "bill_id": null,
       "invoice_id": null,
       "paid_at": null,
@@ -1339,6 +1469,7 @@ curl -X GET https://api.podpdf.com/accounts/me/bills \
       "monthly_pdf_count": 150,
       "monthly_billing_amount": 0.75,
       "is_paid": true,
+      "is_active": false,
       "bill_id": "bill_abc123",
       "invoice_id": "inv_xyz789",
       "paid_at": "2025-12-05T14:20:00Z",
@@ -1355,11 +1486,140 @@ curl -X GET https://api.podpdf.com/accounts/me/bills \
 - **Free Plan Users:** Free plan users will always receive an empty `bills` array.
 - **Bill Creation:** Bill records are automatically created when a paid user generates their first PDF of a month.
 - **Payment Status:** The `is_paid` flag can be updated when payment is processed (e.g., via Paddle webhook).
-- **Historical Records:** All bills are preserved for invoicing and accounting purposes.
+- **Historical Records:** All bills (both active and inactive) are returned and preserved in the same table for invoicing and accounting purposes. The `is_active` field indicates whether a bill is for the current month (`true`) or a previous month (`false`).
+- **Bill Updates:** Bills for the same month are updated in place (counts and amounts are incremented). When a new month begins, previous month bills are marked as `is_active = false` and a new bill is created for the current month.
 
 ---
 
-## 11. `PUT /accounts/me/upgrade`
+## 11. `GET /accounts/me/stats`
+
+**Description:**  
+Get total PDF count, monthly PDF count, and total amount for the authenticated user. For free plans, returns all-time PDF count from the Users table and current month's PDF count from the Bills table. For paid plans, returns current month's PDF count and billing amount from the Bills table.
+
+### 11.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+
+### 11.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/stats`
+
+### 11.3 Response
+
+#### 11.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+**For Paid Plan Users:**
+```json
+{
+  "stats": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "total_pdf_count": 25,
+    "total_pdf_count_month": 25,
+    "total_amount": 0.125
+  }
+}
+```
+
+**For Free Plan Users:**
+```json
+{
+  "stats": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "total_pdf_count": 42,
+    "total_pdf_count_month": 5,
+    "total_amount": 0
+  }
+}
+```
+
+**Fields:**
+- `plan_id` (string): Current plan ID.
+- `plan_type` (string): `"free"` or `"paid"`.
+- `total_pdf_count` (number): 
+  - **For free plan users:** All-time PDF count from Users table (cumulative total since account creation, does not reset).
+  - **For paid plan users:** Current month's PDF count from Bills table (resets each month).
+- `total_pdf_count_month` (number): Current month's PDF count from Bills table for the current month. `0` if no bill record exists for the current month. This field is available for both free and paid plan users.
+- `total_amount` (number): 
+  - **For free plan users:** Always `0` (free plans have no billing).
+  - **For paid plan users:** Current month's billing amount in USD from Bills table. `0` if no bill exists for current month.
+
+#### 11.3.2 Error Responses
+
+- `401 Unauthorized` – Missing or invalid JWT.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+### 11.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/stats \
+  -H "Authorization: Bearer <jwt_token>"
+```
+
+### 11.5 Example Response
+
+**Paid Plan User:**
+```json
+{
+  "stats": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "total_pdf_count": 25,
+    "total_pdf_count_month": 25,
+    "total_amount": 0.125
+  }
+}
+```
+
+**Free Plan User:**
+```json
+{
+  "stats": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "total_pdf_count": 42,
+    "total_pdf_count_month": 5,
+    "total_amount": 0
+  }
+}
+```
+
+### 11.6 Usage Notes
+
+- **PDF Count Behavior:**
+  - **Free Plan Users:** 
+    - `total_pdf_count` shows the **all-time total** from the Users table (cumulative since account creation, does not reset).
+    - `total_pdf_count_month` shows the **current month's count** from the Bills table (resets each month). Returns `0` if no bill record exists for the current month.
+  - **Paid Plan Users:** 
+    - `total_pdf_count` shows the **current month's count only** from the Bills table (resets each month).
+    - `total_pdf_count_month` shows the **current month's count** from the Bills table (same as `total_pdf_count` for paid users). Returns `0` if no bill record exists for the current month.
+- **Amount Behavior:**
+  - **Free Plan Users:** `total_amount` is always `0` (free plans have no billing).
+  - **Paid Plan Users:** `total_amount` shows the current month's billing amount from the Bills table. Returns `0` if no bill record exists for the current month (e.g., new month with no PDFs generated yet).
+- **Data Source:**
+  - Free plans: `total_pdf_count` comes from `Users.total_pdf_count`, `total_pdf_count_month` comes from `Bills.monthly_pdf_count` for the current month.
+  - Paid plans: Both `total_pdf_count` and `total_pdf_count_month` come from `Bills.monthly_pdf_count` for the current month, and `total_amount` comes from `Bills.monthly_billing_amount` for the current month.
+- **Current Month:** The current month is calculated as `YYYY-MM` format (e.g., `"2025-12"` for December 2025). Both free and paid plan users can see their current month's PDF count via `total_pdf_count_month`.
+
+---
+
+## 12. `PUT /accounts/me/upgrade`
 
 **Description:**  
 Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
@@ -1407,7 +1667,7 @@ Authorization: Bearer <jwt_token>
     "plan_id": "paid-standard",
     "name": "Paid Standard",
     "type": "paid",
-    "price_per_pdf": 0.005
+    "price_per_pdf": 0.01
   },
   "upgraded_at": "2025-12-24T15:30:00Z"
 }
@@ -1510,7 +1770,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
     "plan_id": "paid-standard",
     "name": "Paid Standard",
     "type": "paid",
-    "price_per_pdf": 0.005
+    "price_per_pdf": 0.01
   },
   "upgraded_at": "2025-12-24T15:30:00Z"
 }
@@ -1530,10 +1790,33 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 
 ---
 
-## 12. `PUT /accounts/me/webhook`
+## 13. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
+
+**Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
 **Description:**  
 Configure user's default webhook URL for long job notifications.
+
+**⚠️ Deprecation Notice:**
+- This endpoint is **deprecated** and will be removed on **January 1, 2026**
+- Please migrate to the new **Multiple Webhooks System** (see Section 22)
+- The new system provides enhanced features:
+  - Multiple webhooks per user (plan-based limits)
+  - Event-based subscriptions (subscribe only to events you care about)
+  - Delivery history and statistics tracking
+  - Webhook activation/deactivation
+
+**Migration Path:**
+- Instead of `PUT /accounts/me/webhook`, use:
+  - `POST /accounts/me/webhooks` - Create a new webhook
+  - `PUT /accounts/me/webhooks/{webhook_id}` - Update a webhook
+- See Section 22 for complete documentation on the new webhook management API
+
+**Deprecation Headers:**
+All responses include:
+- `Deprecation: true` - Indicates this endpoint is deprecated
+- `Sunset: Mon, 01 Jan 2026 00:00:00 GMT` - Removal date
+- `Link: </accounts/me/webhooks>; rel="successor-version"` - Link to replacement endpoint
 
 ### 10.1 Authentication
 
@@ -1595,11 +1878,19 @@ Authorization: Bearer <jwt_token>
 - `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
 - `500 Internal Server Error` – Server-side failure.
 
+**⚠️ Deprecation Response Fields:**
+The response includes additional fields indicating deprecation:
+- `_deprecated` (boolean) - Always `true` for this endpoint
+- `_deprecation_message` (string) - Message explaining the deprecation
+- `_migration_guide` (string) - Link to migration documentation
+
 **Note:** This sets the default webhook URL for all long jobs. You can override it per-job by providing `webhook_url` in the `POST /longjob` request body.
+
+**⚠️ Important:** This endpoint will stop working on January 1, 2026. Please migrate to the new webhook management system before this date.
 
 ---
 
-## 13. `DELETE /accounts/me`
+## 14. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
@@ -1643,7 +1934,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 14. API Key Management
+## 15. API Key Management
 
 The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
 
@@ -1651,12 +1942,12 @@ The following endpoints allow users to create, list, and revoke API keys for pro
 
 ---
 
-### 14.1 `POST /accounts/me/api-keys`
+### 15.1 `POST /accounts/me/api-keys`
 
 **Description:**  
 Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
 
-#### 14.1.1 Authentication
+#### 15.1.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1670,7 +1961,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.1.2 HTTP Request
+#### 15.1.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/accounts/me/api-keys`  
@@ -1686,7 +1977,7 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
 
-#### 14.1.3 Response
+#### 15.1.3 Response
 
 **Success Response (201 Created):**
 ```json
@@ -1718,12 +2009,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 14.2 `GET /accounts/me/api-keys`
+### 15.2 `GET /accounts/me/api-keys`
 
 **Description:**  
 List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
 
-#### 14.2.1 Authentication
+#### 15.2.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1737,12 +2028,12 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.2.2 HTTP Request
+#### 15.2.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me/api-keys`
 
-#### 14.2.3 Response
+#### 15.2.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -1789,12 +2080,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 14.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+### 15.3 `DELETE /accounts/me/api-keys/{api_key_id}`
 
 **Description:**  
 Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
 
-#### 14.3.1 Authentication
+#### 15.3.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1808,7 +2099,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.3.2 HTTP Request
+#### 15.3.2 HTTP Request
 
 **Method:** `DELETE`  
 **Path:** `/accounts/me/api-keys/{api_key_id}`
@@ -1816,7 +2107,7 @@ Authorization: Bearer <jwt_token>
 **Path Parameters:**
 - `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
 
-#### 14.3.3 Response
+#### 15.3.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -1847,7 +2138,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 15. Health Check (Optional, Internal)
+## 16. Health Check (Optional, Internal)
 
 > **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
 
@@ -1878,7 +2169,7 @@ Implementation of `/health` is left to the service owner and may be internal-onl
 
 ---
 
-## 16. `POST /signup`
+## 17. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
@@ -2039,23 +2330,23 @@ curl -X POST https://api.podpdf.com/signup \
 
 ---
 
-## 17. `POST /confirm-signup`
+## 18. `POST /confirm-signup`
 
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
 
-### 13.1 Authentication
+### 18.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to confirm email addresses after signup.
 
-### 14.2 HTTP Request
+### 18.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/confirm-signup`  
 **Content-Type:** `application/json`
 
-#### 13.2.1 Request Body
+#### 18.2.1 Request Body
 
 ```json
 {
@@ -2068,9 +2359,9 @@ Confirm user email with the verification code received via email. After successf
 - `email` (string, required) - User's email address (same email used in signup)
 - `confirmationCode` (string, required) - 6-digit verification code received via email
 
-### 14.3 HTTP Response
+### 18.3 HTTP Response
 
-#### 13.3.1 Success Response (200 OK)
+#### 18.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2194,23 +2485,23 @@ curl -X POST https://api.podpdf.com/confirm-signup \
 
 ---
 
-## 18. `POST /signin`
+## 19. `POST /signin`
 
 **Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
 
-### 14.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to obtain authentication tokens.
 
-### 14.2 HTTP Request
+### 19.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/signin`  
 **Content-Type:** `application/json`
 
-#### 14.2.1 Request Body
+#### 19.2.1 Request Body
 
 ```json
 {
@@ -2223,9 +2514,9 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
 - `email` (string, required) - User's email address (used as username in Cognito)
 - `password` (string, required) - User's password
 
-### 14.3 HTTP Response
+### 19.3 HTTP Response
 
-#### 14.3.1 Success Response (200 OK)
+#### 19.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2247,7 +2538,7 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
   - `refreshToken` (string) - Refresh token (for obtaining new tokens)
   - `expiresIn` (number) - Token expiration time in seconds
 
-#### 14.3.2 Error Responses
+#### 19.3.2 Error Responses
 
 **400 Bad Request - Missing Fields**
 ```json
@@ -2314,7 +2605,7 @@ curl -X POST https://api.podpdf.com/signin \
 }
 ```
 
-### 14.6 Usage Notes
+### 19.6 Usage Notes
 
 - **Token Usage:** Use the `accessToken` in the `Authorization` header for authenticated API requests: `Authorization: Bearer <accessToken>`
 - **Token Expiration:** Tokens expire after 24 hours (as configured in Cognito). Use the `/refresh` endpoint with the `refreshToken` to obtain new tokens.
@@ -2329,7 +2620,7 @@ curl -X POST https://api.podpdf.com/signin \
 
 ---
 
-## 19. `POST /refresh`
+## 20. `POST /refresh`
 
 **Description:**  
 Refresh authentication tokens using a refresh token. Returns new ID token and access token.
@@ -2356,9 +2647,9 @@ Refresh authentication tokens using a refresh token. Returns new ID token and ac
 **Fields:**
 - `refreshToken` (string, required) - Refresh token obtained from `/signin` endpoint
 
-### 14.3 HTTP Response
+### 20.3 HTTP Response
 
-#### 13.3.1 Success Response (200 OK)
+#### 20.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2487,3 +2778,668 @@ When a long job completes, a POST request is sent to the configured webhook URL 
 **Webhook Response:**
 - Webhook endpoint should return `200 OK` to confirm receipt
 - Any other status code will trigger retries
+
+---
+
+## 21. `POST /webhook/job-done`
+
+**Description:**  
+Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
+
+### 21.1 Authentication
+
+- **Type:** None (public endpoint with payload validation)
+- **Security:** Payload structure validation and job verification prevent abuse
+- **Note:** This endpoint is intended for internal use by PodPDF services. External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22).
+
+### 21.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/webhook/job-done`  
+**Content-Type:** `application/json`
+
+#### 21.2.1 Request Body
+
+The webhook payload sent from api.podpdf.com when a job completes:
+
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed",
+  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "s3_url_expires_at": "2025-12-21T11:32:15Z",
+  "pages": 150,
+  "mode": "html",
+  "truncated": false,
+  "created_at": "2025-12-21T10:30:00Z",
+  "completed_at": "2025-12-21T10:32:15Z"
+}
+```
+
+**Required Fields:**
+- `job_id` (string, required): UUID of the completed job
+- `status` (string, required): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
+
+**Optional Fields:**
+- `pages` (integer, optional): Number of pages in the generated PDF
+- `mode` (string, optional): Input mode - one of: `html`, `markdown`, `image`
+- `truncated` (boolean, optional): Whether the PDF was truncated due to page limit
+- `s3_url` (string, optional): Signed S3 URL for downloading the PDF (for long jobs)
+- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when the S3 URL expires
+- `created_at` (string, optional): ISO 8601 timestamp when the job was created
+- `completed_at` (string, optional): ISO 8601 timestamp when the job completed
+- `error_message` (string, optional): Error message if job failed
+
+### 21.3 Validation
+
+The endpoint performs comprehensive validation to prevent abuse:
+
+1. **Structure Validation:**
+   - Request body must be valid JSON object
+   - Required fields must be present
+   - Field types must match expected types
+
+2. **Format Validation:**
+   - `job_id` must be a valid UUID format
+   - `status` must be one of the valid status values
+   - Timestamps must be in ISO 8601 format
+   - URLs must be valid URL format
+   - Numbers must be valid integers
+
+3. **Size Validation:**
+   - Payload size limited to 100KB maximum
+
+4. **Job Verification:**
+   - Job must exist in the system
+   - Job status must match the webhook payload status (prevents replay attacks)
+
+### 21.4 Response
+
+#### 21.4.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "message": "Webhook received successfully",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed"
+}
+```
+
+#### 21.4.2 Error Responses
+
+- `400 Bad Request` – Invalid payload structure, missing required fields, invalid field types, or payload size exceeds limit
+  - Error code: `INVALID_PARAMETER`
+  - Details include specific validation failure reason
+
+- `404 Not Found` – Job not found in system
+  - Error code: `JOB_NOT_FOUND`
+
+- `400 Bad Request` – Status mismatch (webhook status doesn't match actual job status)
+  - Error code: `INVALID_PARAMETER`
+  - Prevents replay attacks with outdated statuses
+
+- `500 Internal Server Error` – Server-side processing error
+  - Error code: `INTERNAL_SERVER_ERROR`
+
+### 21.5 Security Features
+
+- **Payload Structure Validation:** Validates all fields before processing
+- **Job Existence Verification:** Ensures job exists before processing
+- **Status Mismatch Detection:** Prevents replay attacks by verifying status matches
+- **Size Limits:** Prevents abuse with oversized payloads (100KB max)
+- **Comprehensive Logging:** All requests logged with source IP for monitoring
+
+### 21.6 Usage Notes
+
+- This endpoint is designed for internal PodPDF services
+- External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22 for webhook management)
+- The endpoint validates all webhook payloads before processing
+- Failed validations return appropriate error codes without processing
+- All webhook receipts are logged for monitoring and debugging
+
+---
+
+## 22. Webhook Management (Multiple Webhooks)
+
+**Description:**  
+Manage multiple webhook configurations per user with event-based subscriptions. This replaces the single webhook URL approach with a more flexible system that supports multiple webhooks, event filtering, and delivery tracking.
+
+**Note:** The legacy `PUT /accounts/me/webhook` endpoint (section 13) is **deprecated** and will be removed on January 1, 2026. Please migrate to the new webhook management system which provides enhanced features:
+- Multiple webhooks per user (plan-based limits)
+- Event-based subscriptions (subscribe only to events you care about)
+- Delivery history and statistics tracking
+- Webhook activation/deactivation
+
+### 22.1 Authentication
+
+All webhook management endpoints require:
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired
+- User account must exist in `Users` table
+
+### 22.2 Plan-Based Limits
+
+Maximum webhooks per user is determined by their plan:
+- **Free tier plans:** 1 webhook
+- **Paid tier plans:** 5 webhooks (default)
+- **Enterprise tier plans:** 50 webhooks
+
+The limit is configured in the `Plans` table (`max_webhooks` field). If the limit is reached, creating a new webhook returns `403 Forbidden` with error code `WEBHOOK_LIMIT_EXCEEDED`.
+
+---
+
+## 22.1 `POST /accounts/me/webhooks`
+
+**Description:**  
+Create a new webhook configuration.
+
+### 22.1.1 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/accounts/me/webhooks`  
+**Content-Type:** `application/json`
+
+#### 22.1.2 Request Body
+
+```json
+{
+  "name": "Production Webhook",
+  "url": "https://api.example.com/webhooks/podpdf",
+  "events": ["job.completed", "job.failed"],
+  "is_active": true
+}
+```
+
+**Fields:**
+- `name` (string, optional) - Descriptive name for the webhook (e.g., "Production Webhook", "Staging Webhook")
+- `url` (string, required) - HTTPS URL for webhook endpoint
+  - Must be a valid HTTPS URL
+  - URL length: 1-2048 characters
+- `events` (array of strings, optional) - Event types to subscribe to
+  - Default: `["job.completed"]` if not specified
+  - Valid values: `job.completed`, `job.failed`, `job.timeout`, `job.queued`, `job.processing`
+  - Array cannot be empty
+- `is_active` (boolean, optional) - Whether webhook is active (default: `true`)
+  - Inactive webhooks are not called
+
+### 22.1.3 Response
+
+#### 22.1.3.1 Success Response
+
+- **Status:** `201 Created`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "name": "Production Webhook",
+  "url": "https://api.example.com/webhooks/podpdf",
+  "events": ["job.completed", "job.failed"],
+  "is_active": true,
+  "created_at": "2025-12-24T10:00:00Z",
+  "updated_at": "2025-12-24T10:00:00Z",
+  "success_count": 0,
+  "failure_count": 0
+}
+```
+
+**Fields:**
+- `webhook_id` (string) - Unique webhook identifier (ULID)
+- `name` (string, optional) - Webhook name
+- `url` (string) - Webhook URL
+- `events` (array) - Subscribed event types
+- `is_active` (boolean) - Active status
+- `created_at` (string) - ISO 8601 timestamp
+- `updated_at` (string) - ISO 8601 timestamp
+- `success_count` (number) - Total successful deliveries (starts at 0)
+- `failure_count` (number) - Total failed deliveries (starts at 0)
+
+#### 22.1.3.2 Error Responses
+
+- `400 Bad Request` - Invalid URL, invalid events, or malformed request
+  - Error code: `INVALID_WEBHOOK_URL` - URL must be HTTPS
+  - Error code: `INVALID_EVENTS` - Invalid event type or empty events array
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Account not found or webhook limit exceeded
+  - Error code: `ACCOUNT_NOT_FOUND` - User account not found
+  - Error code: `WEBHOOK_LIMIT_EXCEEDED` - Maximum webhooks reached for plan
+    - Includes details: `plan_id`, `plan_type`, `current_count`, `max_allowed`, `upgrade_required`
+- `500 Internal Server Error` - Server-side failure
+
+---
+
+## 22.2 `GET /accounts/me/webhooks`
+
+**Description:**  
+List all webhooks for the authenticated user.
+
+### 22.2.1 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/webhooks`
+
+#### 22.2.2 Query Parameters
+
+- `is_active` (boolean, optional) - Filter by active status (`true` or `false`)
+- `event` (string, optional) - Filter webhooks that subscribe to this event type
+  - Valid values: `job.completed`, `job.failed`, `job.timeout`, `job.queued`, `job.processing`
+- `limit` (number, optional) - Maximum results (default: 50, max: 100)
+- `next_token` (string, optional) - Pagination token from previous response
+
+### 22.2.2 Response
+
+#### 22.2.2.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "webhooks": [
+    {
+      "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "name": "Production Webhook",
+      "url": "https://api.example.com/webhooks/podpdf",
+      "events": ["job.completed", "job.failed"],
+      "is_active": true,
+      "created_at": "2025-12-24T10:00:00Z",
+      "updated_at": "2025-12-24T10:00:00Z",
+      "last_triggered_at": "2025-12-24T15:30:00Z",
+      "success_count": 150,
+      "failure_count": 2,
+      "last_success_at": "2025-12-24T15:30:00Z",
+      "last_failure_at": "2025-12-24T14:20:00Z"
+    }
+  ],
+  "count": 1,
+  "next_token": null
+}
+```
+
+**Fields:**
+- `webhooks` (array) - List of webhook configurations
+- `count` (number) - Number of webhooks in this response
+- `next_token` (string, optional) - Pagination token for next page (null if last page)
+
+#### 22.2.2.2 Error Responses
+
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Account not found
+- `500 Internal Server Error` - Server-side failure
+
+---
+
+## 22.3 `GET /accounts/me/webhooks/{webhook_id}`
+
+**Description:**  
+Get details of a specific webhook.
+
+### 22.3.1 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/webhooks/{webhook_id}`
+
+**Path Parameters:**
+- `webhook_id` (string, required) - Webhook identifier (ULID)
+
+### 22.3.2 Response
+
+#### 22.3.2.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "webhook": {
+    "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "name": "Production Webhook",
+    "url": "https://api.example.com/webhooks/podpdf",
+    "events": ["job.completed", "job.failed"],
+    "is_active": true,
+    "created_at": "2025-12-24T10:00:00Z",
+    "updated_at": "2025-12-24T10:00:00Z",
+    "last_triggered_at": "2025-12-24T15:30:00Z",
+    "success_count": 150,
+    "failure_count": 2,
+    "last_success_at": "2025-12-24T15:30:00Z",
+    "last_failure_at": "2025-12-24T14:20:00Z"
+  }
+}
+```
+
+#### 22.3.2.2 Error Responses
+
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Account not found or webhook doesn't belong to user
+  - Error code: `ACCOUNT_NOT_FOUND` - User account not found
+  - Error code: `WEBHOOK_ACCESS_DENIED` - Webhook belongs to different user
+- `404 Not Found` - Webhook not found
+  - Error code: `WEBHOOK_NOT_FOUND`
+- `500 Internal Server Error` - Server-side failure
+
+---
+
+## 22.4 `PUT /accounts/me/webhooks/{webhook_id}`
+
+**Description:**  
+Update an existing webhook configuration.
+
+### 22.4.1 HTTP Request
+
+**Method:** `PUT`  
+**Path:** `/accounts/me/webhooks/{webhook_id}`  
+**Content-Type:** `application/json`
+
+**Path Parameters:**
+- `webhook_id` (string, required) - Webhook identifier (ULID)
+
+#### 22.4.2 Request Body
+
+```json
+{
+  "name": "Updated Production Webhook",
+  "url": "https://api.example.com/webhooks/podpdf-v2",
+  "events": ["job.completed"],
+  "is_active": true
+}
+```
+
+**Fields:** Same as POST, all optional (only provided fields are updated)
+- `name` (string, optional) - Update webhook name
+- `url` (string, optional) - Update webhook URL (must be HTTPS)
+- `events` (array of strings, optional) - Update subscribed events
+- `is_active` (boolean, optional) - Update active status
+
+### 22.4.3 Response
+
+#### 22.4.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "name": "Updated Production Webhook",
+  "url": "https://api.example.com/webhooks/podpdf-v2",
+  "events": ["job.completed"],
+  "is_active": true,
+  "created_at": "2025-12-24T10:00:00Z",
+  "updated_at": "2025-12-24T16:00:00Z",
+  "success_count": 150,
+  "failure_count": 2
+}
+```
+
+#### 22.4.3.2 Error Responses
+
+Same as GET endpoint (22.3.2.2)
+
+---
+
+## 22.5 `DELETE /accounts/me/webhooks/{webhook_id}`
+
+**Description:**  
+Delete a webhook configuration.
+
+### 22.5.1 HTTP Request
+
+**Method:** `DELETE`  
+**Path:** `/accounts/me/webhooks/{webhook_id}`
+
+**Path Parameters:**
+- `webhook_id` (string, required) - Webhook identifier (ULID)
+
+### 22.5.2 Response
+
+#### 22.5.2.1 Success Response
+
+- **Status:** `204 No Content`
+- **Body:** Empty
+
+#### 22.5.2.2 Error Responses
+
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Account not found or webhook doesn't belong to user
+- `404 Not Found` - Webhook not found
+- `500 Internal Server Error` - Server-side failure
+
+---
+
+## 22.6 `GET /accounts/me/webhooks/{webhook_id}/history`
+
+**Description:**  
+Get delivery history for a webhook.
+
+### 22.6.1 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/webhooks/{webhook_id}/history`
+
+**Path Parameters:**
+- `webhook_id` (string, required) - Webhook identifier (ULID)
+
+#### 22.6.2 Query Parameters
+
+- `status` (string, optional) - Filter by delivery status
+  - Valid values: `success`, `failed`, `timeout`
+- `event_type` (string, optional) - Filter by event type
+  - Valid values: `job.completed`, `job.failed`, `job.timeout`, `job.queued`, `job.processing`
+- `limit` (number, optional) - Maximum results (default: 50, max: 100)
+- `next_token` (string, optional) - Pagination token from previous response
+
+### 22.6.3 Response
+
+#### 22.6.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "history": [
+    {
+      "delivery_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+      "event_type": "job.completed",
+      "status": "success",
+      "status_code": 200,
+      "retry_count": 0,
+      "delivered_at": "2025-12-24T15:30:00Z",
+      "duration_ms": 245,
+      "payload_size_bytes": 1024
+    },
+    {
+      "delivery_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+      "job_id": "8e1b5c89-3d1d-5e25-ac9c-234567890def",
+      "event_type": "job.completed",
+      "status": "failed",
+      "status_code": 500,
+      "error_message": "HTTP 500",
+      "retry_count": 3,
+      "delivered_at": "2025-12-24T14:20:00Z",
+      "duration_ms": 7500,
+      "payload_size_bytes": 1024
+    }
+  ],
+  "count": 2,
+  "next_token": null
+}
+```
+
+**Fields:**
+- `history` (array) - List of delivery records
+  - `delivery_id` (string) - Unique delivery identifier (ULID)
+  - `job_id` (string) - Job ID that triggered this webhook
+  - `event_type` (string) - Event type that triggered webhook
+  - `status` (string) - Delivery status: `success`, `failed`, or `timeout`
+  - `status_code` (number, optional) - HTTP status code from webhook endpoint
+  - `error_message` (string, optional) - Error message if delivery failed
+  - `retry_count` (number) - Number of retry attempts (0-3)
+  - `delivered_at` (string) - ISO 8601 timestamp when delivery completed
+  - `duration_ms` (number) - Total delivery duration in milliseconds
+  - `payload_size_bytes` (number) - Size of webhook payload in bytes
+- `count` (number) - Number of history records in this response
+- `next_token` (string, optional) - Pagination token for next page
+
+**Note:** History records are automatically deleted after 90 days (TTL).
+
+#### 22.6.3.2 Error Responses
+
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Account not found or webhook doesn't belong to user
+- `404 Not Found` - Webhook not found
+- `500 Internal Server Error` - Server-side failure
+
+---
+
+## 22.7 Webhook Event Types
+
+The following event types can be subscribed to:
+
+### 22.7.1 `job.completed`
+
+**Triggered when:** A long job successfully completes PDF generation
+
+**Payload:**
+```json
+{
+  "event": "job.completed",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed",
+  "job_type": "long",
+  "mode": "html",
+  "pages": 150,
+  "truncated": false,
+  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "s3_url_expires_at": "2025-12-21T11:32:15Z",
+  "created_at": "2025-12-21T10:30:00Z",
+  "completed_at": "2025-12-21T10:32:15Z",
+  "timestamp": "2025-12-21T10:32:15Z"
+}
+```
+
+### 22.7.2 `job.failed`
+
+**Triggered when:** A job fails during processing (PDF generation error, Chromium crash, etc.)
+
+**Payload:**
+```json
+{
+  "event": "job.failed",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "failed",
+  "job_type": "long",
+  "mode": "html",
+  "error_message": "PDF generation failed: Chromium process crashed",
+  "created_at": "2025-12-21T10:30:00Z",
+  "failed_at": "2025-12-21T10:32:15Z",
+  "timestamp": "2025-12-21T10:32:15Z"
+}
+```
+
+### 22.7.3 `job.timeout`
+
+**Triggered when:** A quick job exceeds 30-second timeout
+
+**Payload:**
+```json
+{
+  "event": "job.timeout",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "timeout",
+  "job_type": "quick",
+  "mode": "html",
+  "timeout_seconds": 30,
+  "created_at": "2025-12-21T10:30:00Z",
+  "timeout_at": "2025-12-21T10:30:30Z",
+  "timestamp": "2025-12-21T10:30:30Z"
+}
+```
+
+### 22.7.4 `job.queued`
+
+**Triggered when:** A long job is queued for processing
+
+**Payload:**
+```json
+{
+  "event": "job.queued",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "queued",
+  "job_type": "long",
+  "mode": "html",
+  "created_at": "2025-12-21T10:30:00Z",
+  "timestamp": "2025-12-21T10:30:00Z"
+}
+```
+
+### 22.7.5 `job.processing`
+
+**Triggered when:** A long job starts processing (extracted from SQS queue)
+
+**Payload:**
+```json
+{
+  "event": "job.processing",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "processing",
+  "job_type": "long",
+  "mode": "html",
+  "created_at": "2025-12-21T10:30:00Z",
+  "started_at": "2025-12-21T10:30:05Z",
+  "timestamp": "2025-12-21T10:30:05Z"
+}
+```
+
+### 22.7.6 Webhook Headers
+
+All webhook requests include standard headers:
+- `Content-Type: application/json`
+- `User-Agent: PodPDF-Webhook/1.0`
+- `X-Webhook-Event: <event_type>` (e.g., `X-Webhook-Event: job.completed`)
+- `X-Webhook-Id: <webhook_id>` - Webhook identifier
+- `X-Webhook-Delivery-Id: <delivery_id>` - Unique delivery identifier
+- `X-Webhook-Timestamp: <iso_timestamp>` - Event timestamp
+
+### 22.7.7 Webhook Delivery
+
+**Retry Logic:
+- System defaults: 3 retries with exponential backoff (1s, 2s, 4s)
+- Retries on:
+  - Network errors
+  - Timeout (10 seconds)
+  - HTTP 5xx errors
+  - HTTP 429 (Too Many Requests)
+- Does NOT retry on:
+  - HTTP 2xx (success)
+  - HTTP 4xx (client errors, except 429)
+
+**Delivery Guarantees:**
+- **At-least-once delivery:** Webhooks may be delivered multiple times in case of retries or system failures
+- **Best-effort delivery:** Failed webhooks are retried, but if all retries fail, delivery is not guaranteed
+- **Ordering:** Webhooks are delivered in the order events occur, but delivery order is not guaranteed across different webhooks
+- **Idempotency:** Webhook receivers should handle duplicate deliveries (use `delivery_id` to deduplicate)
+
+**Webhook Receiver Validation:**
+Webhook receivers should:
+1. Validate payload structure (check required fields and types)
+2. Use `delivery_id` from `X-Webhook-Delivery-Id` header for idempotency
+3. Return `200 OK` quickly, process asynchronously if needed

@@ -143,7 +143,7 @@ const response = await fetch('https://api.podpdf.com/quickjob', {
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `input_type` | string | ✅ | `"html"`, `"markdown"`, or `"image"` |
+| `input_type` | string | ✅ | `"html"`, `"markdown"`, or `"image"`. Must be enabled for your plan (see `enabled_conversion_types` in plan details). |
 | `html` | string | ✅* | HTML content (*required if input_type is html) |
 | `markdown` | string | ✅* | Markdown content (*required if input_type is markdown) |
 | `options` | object | ❌ | PDF generation options |
@@ -231,6 +231,7 @@ If you hit the timeout, your document is too large for QuickJob.
 | 400 | `INVALID_MULTIPART` | Malformed multipart request | Check Content-Type and form data |
 | 401 | `UNAUTHORIZED` | Invalid or missing API key | Check your API key |
 | 403 | `ACCOUNT_NOT_FOUND` | Account doesn't exist | Create an account |
+| 403 | `CONVERSION_TYPE_NOT_ENABLED` | Conversion type not enabled for plan | Check plan's `enabled_conversion_types` |
 | 403 | `RATE_LIMIT_EXCEEDED` | Too many requests | Wait 1 minute (free tier: 20/min) |
 | 403 | `QUOTA_EXCEEDED` | Free tier quota used up | [Upgrade to paid plan](/api-reference/plans) |
 | 408 | `QUICKJOB_TIMEOUT` | Took too long | Use /longjob instead |

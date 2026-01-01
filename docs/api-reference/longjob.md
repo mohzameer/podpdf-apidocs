@@ -24,13 +24,13 @@ LongJob does **NOT** support image uploads (multipart/form-data). Use `/quickjob
 
 ## Authentication
 
-This endpoint requires authentication. Include your access token in the Authorization header:
+This endpoint requires authentication. Include your API key in the request header:
 
 ```http
-Authorization: Bearer <accessToken>
+X-API-Key: your_api_key_here
 ```
 
-See the [Authentication Guide](/authentication) for details on obtaining tokens.
+[Learn about API keys →](/authentication)
 
 ## Request
 
@@ -43,7 +43,7 @@ POST /longjob
 ### Headers
 
 ```http
-Authorization: Bearer <accessToken>
+X-API-Key: your_api_key_here
 Content-Type: application/json
 ```
 
@@ -92,7 +92,6 @@ import TabItem from '@theme/TabItem';
     "printBackground": true,
     "scale": 1.0
   },
-  "webhook_url": "https://example.com/webhook"
 }
 ```
 
@@ -103,11 +102,14 @@ import TabItem from '@theme/TabItem';
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `input_type` | string | Yes | Must be `"html"` or `"markdown"` (images not supported) |
+| `input_type` | string | Yes | Must be `"html"` or `"markdown"` (images not supported). Must be enabled for your plan (see `enabled_conversion_types` in plan details). |
 | `html` | string | Yes* | Full HTML content to render (required if `input_type` is `"html"`) |
 | `markdown` | string | Yes* | Markdown content to render (required if `input_type` is `"markdown"`) |
 | `options` | object | No | PDF generation options (same as `/quickjob` HTML/Markdown options) |
-| `webhook_url` | string | No | Override your default webhook URL for this job. Must be a valid HTTPS URL. If not provided, uses your default webhook URL. |
+
+:::info Webhook Notifications
+Webhooks are configured separately using the [Webhook Management API](/api-reference/webhooks). You can create multiple webhooks and subscribe to specific events like `job.completed`, `job.failed`, etc.
+:::
 
 :::info Supported Input Types
 - ✅ HTML
@@ -147,10 +149,10 @@ The PDF page count is validated before queuing. If the page limit is exceeded, y
 | Status Code | Error Code | Description |
 |-------------|------------|-------------|
 | `400 Bad Request` | `PAGE_LIMIT_EXCEEDED` | PDF exceeds maximum page limit (checked before queuing) |
-| `400 Bad Request` | - | Invalid `webhook_url` (not HTTPS or malformed URL) |
 | `400 Bad Request` | - | Invalid/missing `input_type`, missing content, or input size exceeds limit |
 | `401 Unauthorized` | - | Missing or invalid authentication token |
 | `403 Forbidden` | `ACCOUNT_NOT_FOUND` | Account not found |
+| `403 Forbidden` | `CONVERSION_TYPE_NOT_ENABLED` | Requested conversion type not enabled for your plan |
 | `403 Forbidden` | `RATE_LIMIT_EXCEEDED` | Rate limit exceeded (free tier: 20 requests/minute) |
 | `403 Forbidden` | `QUOTA_EXCEEDED` | Free tier quota exhausted (upgrade required) |
 | `429 Too Many Requests` | - | Too many requests (global rate limit) |
@@ -169,7 +171,7 @@ See the [Jobs API](/api-reference/jobs) documentation for details on checking jo
 
 ## Webhooks
 
-When your job completes, you'll receive a webhook notification (if configured) with the PDF URL and job details. See the [Webhooks Guide](/api-reference/webhooks) for complete webhook documentation.
+When your job completes, you'll receive webhook notifications (if configured) with the PDF URL and job details. Configure webhooks using the [Webhook Management API](/api-reference/webhooks) to subscribe to events like `job.completed`, `job.failed`, etc.
 
 ## Examples
 
@@ -177,15 +179,14 @@ When your job completes, you'll receive a webhook notification (if configured) w
 
 ```bash
 curl -X POST https://api.podpdf.com/longjob \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "X-API-Key: your_api_key_here" \
   -H "Content-Type: application/json" \
   -d '{
     "input_type": "html",
     "html": "<h1>Large Document</h1><p>Content...</p>",
     "options": {
       "format": "A4"
-    },
-    "webhook_url": "https://example.com/webhook"
+    }
   }'
 ```
 
@@ -195,7 +196,7 @@ curl -X POST https://api.podpdf.com/longjob \
 const response = await fetch('https://api.podpdf.com/longjob', {
   method: 'POST',
   headers: {
-    'Authorization': `Bearer ${accessToken}`,
+    'X-API-Key': apiKey,
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
@@ -203,8 +204,7 @@ const response = await fetch('https://api.podpdf.com/longjob', {
     html: '<h1>Large Document</h1><p>Content...</p>',
     options: {
       format: 'A4'
-    },
-    webhook_url: 'https://example.com/webhook'
+    }
   })
 });
 
@@ -222,7 +222,7 @@ import requests
 
 url = 'https://api.podpdf.com/longjob'
 headers = {
-    'Authorization': f'Bearer {access_token}',
+    'X-API-Key': api_key,
     'Content-Type': 'application/json'
 }
 data = {
@@ -230,8 +230,7 @@ data = {
     'html': '<h1>Large Document</h1><p>Content...</p>',
     'options': {
         'format': 'A4'
-    },
-    'webhook_url': 'https://example.com/webhook'
+    }
 }
 
 response = requests.post(url, headers=headers, json=data)
@@ -245,9 +244,10 @@ print(f'Status: {result["status"]}')
 
 ## Usage Tips
 
-- **Webhook configuration**: Set a default webhook URL in your account settings, or provide one per request
+- **Webhook configuration**: Configure webhooks using the [Webhook Management API](/api-reference/webhooks) to receive notifications
 - **Status checking**: Use `GET /jobs/{job_id}` to poll for job status if you're not using webhooks
 - **PDF URLs**: Completed PDFs are available via signed URLs that expire after 1 hour
 - **Page limits**: Page count is validated before queuing to prevent unnecessary processing
 - **Queue time**: Estimated completion time may vary based on current queue depth
+- **Conversion types**: Check your plan's `enabled_conversion_types` to see which input types (html, markdown, image) are available
 
