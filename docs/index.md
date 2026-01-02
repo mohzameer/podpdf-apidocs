@@ -95,7 +95,7 @@ API key-based authentication - just add your key to the request header.
 - **Free Tier:** 100 PDFs to get started
 - **Paid Plans:** Unlimited PDFs, pay per use
 
-[View plans →](/api-reference/plans)
+View plans in your dashboard
 
 ---
 

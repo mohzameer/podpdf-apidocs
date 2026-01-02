@@ -233,7 +233,7 @@ If you hit the timeout, your document is too large for QuickJob.
 | 403 | `ACCOUNT_NOT_FOUND` | Account doesn't exist | Create an account |
 | 403 | `CONVERSION_TYPE_NOT_ENABLED` | Conversion type not enabled for plan | Check plan's `enabled_conversion_types` |
 | 403 | `RATE_LIMIT_EXCEEDED` | Too many requests | Wait 1 minute (free tier: 20/min) |
-| 403 | `QUOTA_EXCEEDED` | Free tier quota used up | [Upgrade to paid plan](/api-reference/plans) |
+| 403 | `QUOTA_EXCEEDED` | Free tier quota used up | Upgrade to paid plan via dashboard |
 | 408 | `QUICKJOB_TIMEOUT` | Took too long | Use /longjob instead |
 | 429 | `TOO_MANY_REQUESTS` | API throttle limit | Wait and retry |
 | 500 | `INTERNAL_SERVER_ERROR` | Server error | Try again later |
@@ -491,12 +491,12 @@ curl -X POST https://api.podpdf.com/quickjob \
 | Timeout | 30 seconds | 30 seconds |
 
 :::tip Need More?
-[Upgrade to unlimited PDFs →](/api-reference/plans)
+Upgrade to unlimited PDFs via your dashboard
 :::
 
 ## Next Steps
 
 - [Try Async Generation →](/api-reference/longjob)
 - [Check Job Status →](/api-reference/jobs)
-- [View Your Account →](/api-reference/accounts)
+- View your account in the dashboard
 - [See More Examples →](/examples/curl-examples)

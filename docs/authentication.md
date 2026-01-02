@@ -258,7 +258,7 @@ API key authentication is subject to rate limits:
 | **Free** | 20 requests/minute | 100 PDFs total |
 | **Paid** | Unlimited | Unlimited PDFs |
 
-[View plans and pricing →](/api-reference/plans)
+View plans and pricing in your dashboard
 
 ## Need Help?
 

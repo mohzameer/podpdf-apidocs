@@ -5,6 +5,11 @@
 // See: https://docusaurus.io/docs/api/docusaurus-config
 
 import {themes as prismThemes} from 'prism-react-renderer';
+import {readFileSync} from 'fs';
+
+// Get version from package.json
+const packageJson = JSON.parse(readFileSync('./package.json', 'utf8'));
+const API_VERSION = packageJson.version;
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -83,7 +88,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} PodPDF. Built with Docusaurus.`,
+        copyright: `Copyright © ${new Date().getFullYear()} PodPDF. API v${API_VERSION}. Built with Docusaurus.`,
       },
       prism: {
         theme: prismThemes.github,

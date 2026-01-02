@@ -177,7 +177,7 @@ fetch('https://api.podpdf.com/quickjob', {
 ### Explore More Features
 - 📚 [View All API Endpoints](/api-reference/quickjob)
 - 🎨 [See More Code Examples](/examples/curl-examples)
-- 💰 [Check Plan Limits](/api-reference/plans)
+- 💰 Check plan limits in your dashboard
 
 ### Common Use Cases
 - Generate customer invoices
@@ -199,7 +199,7 @@ Your free account includes:
 - 📦 **5 MB max** - Input size limit
 
 :::tip Need More?
-[Upgrade to a paid plan](/api-reference/plans) for unlimited PDFs and higher limits.
+Upgrade to a paid plan via your dashboard for unlimited PDFs and higher limits.
 :::
 
 ## Troubleshooting
@@ -211,7 +211,7 @@ Your free account includes:
 
 ### Error: 403 Quota Exceeded
 - You've used all 100 free PDFs
-- [Upgrade to a paid plan](/api-reference/plans)
+- Upgrade to a paid plan via your dashboard
 
 ### Error: 408 Timeout
 - Your document is too large for QuickJob
