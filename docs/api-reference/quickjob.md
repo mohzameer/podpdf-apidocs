@@ -13,14 +13,15 @@ Generate PDFs instantly (< 30 seconds) - Perfect for simple documents (up to 25 
 - Need PDF immediately
 - Synchronous workflow
 - Converting images to PDF (up to 25 images maximum)
+- Converting a publicly accessible URL to PDF
 
 ❌ **Use LongJob instead when:**
 - Document is large (more than 25 pages)
 - Can use async processing
 - Want webhook notifications
 
-:::info Image Support
-QuickJob supports image-to-PDF conversion! Upload PNG or JPEG images and get a PDF with one image per page. Images process fast (~0.5-2s per image).
+:::info Input Support
+QuickJob supports HTML, Markdown, URL, and image-to-PDF conversion. Pass a public HTTPS URL and the API will fetch and convert it automatically. Images process fast (~0.5-2s per image).
 :::
 
 ## Quick Example
@@ -32,6 +33,16 @@ curl -X POST https://api.podpdf.com/quickjob \
   -d '{
     "input_type": "html",
     "html": "<h1>Invoice</h1><p>Amount: $100</p>"
+  }' \
+  --output invoice.pdf
+
+# Or convert a URL directly
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "X-API-Key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_type": "url",
+    "url": "https://example.com/invoice.html"
   }' \
   --output invoice.pdf
 ```
@@ -77,6 +88,34 @@ import TabItem from '@theme/TabItem';
   }
 }
 ```
+
+  </TabItem>
+  <TabItem value="url" label="URL Input">
+
+```json
+{
+  "input_type": "url",
+  "url": "https://example.com/invoice.html",
+  "options": {
+    "format": "A4",
+    "margin": {
+      "top": "20mm",
+      "right": "20mm",
+      "bottom": "20mm",
+      "left": "20mm"
+    },
+    "printBackground": true
+  }
+}
+```
+
+The API fetches the URL server-side and converts it based on the remote `Content-Type`. Supported content types: `text/html`, `text/markdown`, `image/png`, `image/jpeg`.
+
+**URL requirements:**
+- Must use `https://` (HTTP is rejected)
+- Must be publicly accessible (private/internal IPs are rejected)
+- Remote server must respond within 10 seconds
+- Response body must not exceed 5 MB
 
   </TabItem>
   <TabItem value="markdown" label="Markdown Input">
@@ -139,13 +178,14 @@ const response = await fetch('https://api.podpdf.com/quickjob', {
 
 ### Request Fields
 
-**For HTML/Markdown (JSON):**
+**For HTML/Markdown/URL (JSON):**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `input_type` | string | ✅ | `"html"`, `"markdown"`, or `"image"`. Must be enabled for your plan (see `enabled_conversion_types` in plan details). |
-| `html` | string | ✅* | HTML content (*required if input_type is html) |
-| `markdown` | string | ✅* | Markdown content (*required if input_type is markdown) |
+| `input_type` | string | ✅ | `"html"`, `"markdown"`, `"url"`, or `"image"`. Must be enabled for your plan (see `enabled_conversion_types` in plan details). |
+| `html` | string | ✅* | HTML content (*required if input_type is `"html"`) |
+| `markdown` | string | ✅* | Markdown content (*required if input_type is `"markdown"`) |
+| `url` | string | ✅* | Publicly accessible HTTPS URL (*required if input_type is `"url"`). HTTP URLs and private/internal IPs are rejected. |
 | `options` | object | ❌ | PDF generation options |
 | `options.format` | string | ❌ | Paper format: `"A4"`, `"Letter"`, etc. (default: `"A4"`) |
 | `options.margin` | object | ❌ | Margins for the PDF |
@@ -221,8 +261,10 @@ If you hit the timeout, your document is too large for QuickJob.
 
 | Status | Code | Meaning | Solution |
 |--------|------|---------|----------|
-| 400 | `INVALID_INPUT_TYPE` | Invalid or missing input_type | Use "html", "markdown", or "image" |
-| 400 | `MISSING_CONTENT` | Missing html, markdown, or images | Provide content |
+| 400 | `INVALID_INPUT_TYPE` | Invalid or missing input_type | Use "html", "markdown", "url", or "image" |
+| 400 | `MISSING_CONTENT` | Missing html, markdown, url, or images | Provide content |
+| 400 | `MISSING_URL` | `url` field absent or empty when input_type is "url" | Include the `url` field |
+| 400 | `INVALID_URL` | Not a valid URL, not HTTPS, or resolves to a private IP | Use a public HTTPS URL |
 | 400 | `PAGE_LIMIT_EXCEEDED` | PDF exceeds max pages | Reduce content or use LongJob |
 | 400 | `INVALID_IMAGE_FORMAT` | Image is not PNG or JPEG | Use PNG or JPEG only |
 | 400 | `INVALID_IMAGE_DATA` | Image is corrupted or invalid | Check image file |
@@ -235,10 +277,73 @@ If you hit the timeout, your document is too large for QuickJob.
 | 403 | `RATE_LIMIT_EXCEEDED` | Too many requests | Wait 1 minute (free tier: 20/min) |
 | 403 | `QUOTA_EXCEEDED` | Free tier quota used up | Upgrade to paid plan via dashboard |
 | 408 | `QUICKJOB_TIMEOUT` | Took too long | Use /longjob instead |
+| 422 | `URL_FETCH_FAILED` | DNS failure or connection refused when fetching URL | Check the URL is reachable |
+| 422 | `URL_FETCH_TIMEOUT` | Remote server did not respond within 10 seconds | Ensure the URL responds quickly |
+| 422 | `URL_FETCH_HTTP_ERROR` | Remote server returned a non-2xx status | Check the URL returns 200 |
+| 422 | `URL_CONTENT_TYPE_NOT_SUPPORTED` | Remote Content-Type is not HTML, Markdown, or PNG/JPEG | Use a supported content type |
 | 429 | `TOO_MANY_REQUESTS` | API throttle limit | Wait and retry |
 | 500 | `INTERNAL_SERVER_ERROR` | Server error | Try again later |
 
 ## Complete Examples
+
+### URL to PDF (cURL)
+
+```bash
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "X-API-Key: $PODPDF_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_type": "url",
+    "url": "https://example.com/report.html",
+    "options": { "format": "A4", "printBackground": true }
+  }' \
+  --output report.pdf
+```
+
+### URL to PDF (JavaScript)
+
+```javascript
+const response = await fetch('https://api.podpdf.com/quickjob', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': process.env.PODPDF_API_KEY,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    input_type: 'url',
+    url: 'https://example.com/report.html',
+    options: { format: 'A4', printBackground: true }
+  })
+});
+
+if (response.ok) {
+  const buffer = await response.arrayBuffer();
+  fs.writeFileSync('report.pdf', Buffer.from(buffer));
+}
+```
+
+### URL to PDF (Python)
+
+```python
+import requests, os
+
+response = requests.post(
+    'https://api.podpdf.com/quickjob',
+    headers={
+        'X-API-Key': os.getenv('PODPDF_API_KEY'),
+        'Content-Type': 'application/json'
+    },
+    json={
+        'input_type': 'url',
+        'url': 'https://example.com/report.html',
+        'options': {'format': 'A4', 'printBackground': True}
+    }
+)
+
+if response.status_code == 200:
+    with open('report.pdf', 'wb') as f:
+        f.write(response.content)
+```
 
 ### Images to PDF (cURL)
 
@@ -449,6 +554,8 @@ if ($httpCode == 200) {
 - Use quickjob for simple documents (up to 25 pages or 25 images maximum)
 - Handle timeout errors gracefully
 - Store API keys in environment variables
+- **URL:** Use `https://` URLs only — public, fast-responding pages
+- **URL:** Handle `422` URL fetch errors (the remote server may be down or slow)
 - **Images:** Use PNG or JPEG format, keep under 5MB each
 - **Images:** Each image becomes one page (great for photo albums)
 
@@ -458,6 +565,8 @@ if ($httpCode == 200) {
 - Don't forget to check the X-PDF-Pages header
 - Don't ignore timeout responses
 - Don't hardcode API keys in your code
+- **URL:** Don't use `http://` URLs or private/internal addresses — they are rejected
+- **URL:** Don't point to URLs that return PDF or other unsupported content types
 - **Images:** Don't use unsupported formats (GIF, WebP, etc.)
 - **Images:** Don't exceed 10000×10000 pixel dimensions
 

@@ -8,6 +8,45 @@ All endpoints are served via **Amazon API Gateway HTTP API (v2)** and backed by 
 
 ---
 
+## Error Response Format
+
+All error responses follow a standardized format:
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable error message",
+    "details": {
+      // Additional error-specific details
+      // May include: parameter, action_required, limit, quota, etc.
+    }
+  }
+}
+```
+
+**Key Fields:**
+- **`code`** (string): Machine-readable error code (e.g., `INVALID_PARAMETER`, `ACCOUNT_NOT_FOUND`)
+- **`message`** (string): Human-readable error message describing what went wrong
+- **`details`** (object): Additional context-specific information:
+  - For `INVALID_PARAMETER`: Contains `parameter` and `message` fields
+  - For `QUOTA_EXCEEDED`: Contains `current_usage`, `quota`, `quota_exceeded`, `action_required`
+  - For `RATE_LIMIT_EXCEEDED`: Contains `limit`, `window`, `retry_after`, `type`
+  - For most errors: Contains `action_required` field with guidance
+
+**Common Error Codes:**
+- `INVALID_PARAMETER` - Invalid or missing request parameters (400)
+- `ACCOUNT_NOT_FOUND` - User account not found (403)
+- `QUOTA_EXCEEDED` - Usage quota exceeded (403)
+- `RATE_LIMIT_EXCEEDED` - Rate limit exceeded (403)
+- `UNAUTHORIZED` - Missing or invalid authentication (401)
+- `NOT_FOUND` - Resource not found (404)
+- `INTERNAL_SERVER_ERROR` - Server-side error (500)
+
+For detailed error code documentation, see `ERRORS.md`.
+
+---
+
 ## 1. `POST /quickjob`
 
 **Description:**  
@@ -49,7 +88,7 @@ Authorization: Bearer <api_key>
 
 **Method:** `POST`  
 **Path:** `/quickjob`  
-**Content-Type:** `application/json` (for HTML/Markdown) or `multipart/form-data` (for Images)
+**Content-Type:** `application/json` (for HTML/Markdown/URL) or `multipart/form-data` (for Images)
 
 #### 1.2.1 Request Body (HTML)
 
@@ -91,7 +130,91 @@ Authorization: Bearer <api_key>
 }
 ```
 
-#### 1.2.3 Request Body (Images - Multipart)
+#### 1.2.3 Request Body (URL)
+
+Provide any publicly accessible HTTPS URL pointing to an HTML page, Markdown file, or PNG/JPEG image. The Lambda fetches the URL, detects its content type, and runs the appropriate conversion pipeline.
+
+```json
+{
+  "input_type": "url",
+  "url": "https://example.com/invoice.html",
+  "options": {
+    "format": "A4",
+    "margin": {
+      "top": "20mm",
+      "right": "20mm",
+      "bottom": "20mm",
+      "left": "20mm"
+    },
+    "printBackground": true,
+    "scale": 1.0
+  }
+}
+```
+
+**Supported URL content types:**
+
+| Remote `Content-Type` | Resolved as | Rendering path |
+|-----------------------|-------------|----------------|
+| `text/html`, `application/xhtml+xml` | `html` | Puppeteer |
+| `text/markdown`, `text/x-markdown` | `markdown` | Marked → Puppeteer |
+| `image/png`, `image/jpeg` | `image` | pdf-lib |
+
+If the `Content-Type` is generic (e.g. `text/plain`), the URL file extension is used as a fallback (`.html`, `.htm`, `.md`, `.markdown`, `.png`, `.jpg`, `.jpeg`).
+
+**URL validation constraints:**
+- Must be a valid URL with `https://` scheme (HTTP is rejected).
+- Must not resolve to a private/internal IP (RFC 1918, loopback, link-local, `.local`, `.internal`, `localhost`).
+- Remote server must respond within 10 seconds (configurable via `URL_FETCH_TIMEOUT_SECONDS`).
+- Response body must be ≤ 5 MB.
+- Maximum 5 redirects followed; all redirect targets must also use HTTPS.
+
+**URL-specific error codes:**
+
+| HTTP Status | Code | Cause |
+|-------------|------|-------|
+| `400` | `MISSING_URL` | `url` field absent or empty |
+| `400` | `INVALID_URL` | Not a valid URL, not HTTPS, or resolves to a private IP |
+| `400` | `INPUT_SIZE_EXCEEDED` | Remote response body exceeds 5 MB |
+| `422` | `URL_FETCH_FAILED` | DNS failure, connection refused, or other network error |
+| `422` | `URL_FETCH_TIMEOUT` | Remote server did not respond within 10 seconds |
+| `422` | `URL_FETCH_HTTP_ERROR` | Remote server returned a non-2xx HTTP status |
+| `422` | `URL_CONTENT_TYPE_NOT_SUPPORTED` | Remote `Content-Type` is not HTML, Markdown, or PNG/JPEG |
+
+**cURL example:**
+
+```bash
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_type": "url",
+    "url": "https://example.com/report.html",
+    "options": { "format": "A4", "printBackground": true }
+  }' \
+  --output report.pdf
+```
+
+**JavaScript example:**
+
+```javascript
+const response = await fetch('https://api.podpdf.com/quickjob', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    input_type: 'url',
+    url: 'https://example.com/report.html',
+    options: { format: 'A4', printBackground: true },
+  }),
+});
+
+const pdfBlob = await response.blob();
+```
+
+#### 1.2.4 Request Body (Images - Multipart)
 
 **Content-Type:** `multipart/form-data`
 
@@ -129,17 +252,19 @@ const response = await fetch('/quickjob', {
 - `images` (file, required): One or more image files (PNG or JPEG). Repeat field for multiple images.
 - `options` (string, optional): JSON string with PDF options
 
-#### 1.2.4 Request Fields
+#### 1.2.5 Request Fields
 
 **For HTML/Markdown (JSON):**
 - `input_type` (string, required)
-  - Must be `"html"` or `"markdown"`.
+  - Must be `"html"`, `"markdown"`, or `"url"`.
 - `html` (string, required if `input_type` is `"html"`)
   - Full HTML content to render.
 - `markdown` (string, required if `input_type` is `"markdown"`)
   - Markdown content to render (GitHub-flavored).
+- `url` (string, required if `input_type` is `"url"`)
+  - A publicly accessible HTTPS URL. HTTP URLs, private/internal addresses, and non-HTML/Markdown/image content types are rejected.
 - `options` (object, optional)
-  - Passed to Puppeteer `page.pdf()`:
+  - Passed to Puppeteer `page.pdf()` (for HTML/Markdown/URL) or pdf-lib (for images):
     - `format` (string): `"A4"`, `"Letter"`, etc.
     - `margin` (object): `top`, `right`, `bottom`, `left` (e.g., `"20mm"`).
     - `printBackground` (boolean): default `true`.
@@ -176,12 +301,22 @@ const response = await fetch('/quickjob', {
    - `Users` record must exist for the `sub`; otherwise **403** (`ACCOUNT_NOT_FOUND`).
 
 3. **Body (HTML/Markdown - JSON)**
-   - `input_type` must be `"html"` or `"markdown"`.
+   - `input_type` must be `"html"`, `"markdown"`, or `"url"`.
    - Exactly one of `html` or `markdown` must be provided (non-empty).
    - Content must match `input_type` (basic starting-tag check).
    - Input size must be ≤ ~5 MB.
 
-4. **Body (Images - Multipart)**
+4. **Body (URL - JSON)**
+   - `input_type` must be `"url"`.
+   - `url` field must be present, non-empty, a valid URL, and use `https://` scheme.
+   - Auth/quota/rate-limit checks run **before** the URL is fetched.
+   - The URL is fetched server-side with a 10-second timeout (configurable via `URL_FETCH_TIMEOUT_SECONDS`).
+   - Response body must be ≤ 5 MB.
+   - Maximum 5 redirects followed; redirect targets must also be HTTPS.
+   - Private/internal IPs and reserved hostnames (RFC 1918, loopback, link-local, `.local`, `.internal`, `localhost`) are rejected with **400** `INVALID_URL`.
+   - The remote `Content-Type` must map to `text/html`, `text/markdown`, or `image/png`/`image/jpeg`; anything else is rejected with **422** `URL_CONTENT_TYPE_NOT_SUPPORTED`.
+
+5. **Body (Images - Multipart)**
    - `input_type` must be `"image"`.
    - At least one image file must be provided in the `images` field.
    - Each image must be PNG or JPEG format.
@@ -190,13 +325,14 @@ const response = await fetch('/quickjob', {
    - Image dimensions must be ≤ 10000x10000 pixels.
    - Image count must not exceed page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error before conversion.
 
-5. **Business Logic**
+6. **Business Logic**
    - **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. If the plan does not have `enabled_conversion_types` configured (or it's `null` or empty), all conversion types are allowed (backward compatible).
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
      - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
+     - **Credit Check:** Verifies user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`). If insufficient, rejects with **403** `INSUFFICIENT_CREDITS` error.
    - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
    - **Page Limit (Images):** Same maximum page limit as HTML/Markdown (e.g., 2 pages in dev, 100 pages in prod). Each image = 1 page. The image count is checked **before conversion**. If the image count exceeds the page limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
 
@@ -254,6 +390,10 @@ Common error statuses:
   - Content type mismatch
   - Input size exceeds limit
   - PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`)
+  - **URL-specific errors:**
+    - `MISSING_URL` - `url` field absent or empty when `input_type` is `"url"`
+    - `INVALID_URL` - Not a valid URL, not `https://`, or resolves to a private/reserved IP
+    - `INPUT_SIZE_EXCEEDED` - Remote URL response body exceeds 5 MB
   - **Image-specific errors:**
     - `INVALID_IMAGE_FORMAT` - Image is not PNG or JPEG
     - `INVALID_IMAGE_DATA` - Image is corrupted or invalid
@@ -275,6 +415,42 @@ Common error statuses:
 
 - `408 Request Timeout`
   - Job processing exceeded 30-second timeout
+
+- `422 Unprocessable Entity` _(URL input type only)_
+  - `URL_FETCH_FAILED` — DNS failure, connection refused, or other network error reaching the URL
+  - `URL_FETCH_TIMEOUT` — Remote server did not respond within 10 seconds
+  - `URL_FETCH_HTTP_ERROR` — Remote server returned a non-2xx status (e.g. 404, 500)
+  - `URL_CONTENT_TYPE_NOT_SUPPORTED` — Remote `Content-Type` is not HTML, Markdown, or PNG/JPEG
+
+  Example `URL_FETCH_HTTP_ERROR` response:
+  ```json
+  {
+    "error": {
+      "code": "URL_FETCH_HTTP_ERROR",
+      "message": "Remote URL returned HTTP 404",
+      "details": {
+        "url": "https://example.com/missing.html",
+        "status_code": 404,
+        "status_text": "Not Found"
+      }
+    }
+  }
+  ```
+
+  Example `URL_CONTENT_TYPE_NOT_SUPPORTED` response:
+  ```json
+  {
+    "error": {
+      "code": "URL_CONTENT_TYPE_NOT_SUPPORTED",
+      "message": "Content type 'application/pdf' is not supported for URL conversion",
+      "details": {
+        "url": "https://example.com/doc.pdf",
+        "content_type": "application/pdf",
+        "supported_types": ["text/html", "text/markdown", "image/png", "image/jpeg"]
+      }
+    }
+  }
+  ```
 
 - `429 Too Many Requests`
   - Global API Gateway throttling triggered (from API Gateway, not Lambda).
@@ -347,8 +523,7 @@ Authorization: Bearer <api_key>
     },
     "printBackground": true,
     "scale": 1.0
-  },
-  "webhook_url": "https://example.com/webhook"
+  }
 }
 ```
 
@@ -368,8 +543,7 @@ Authorization: Bearer <api_key>
     },
     "printBackground": true,
     "scale": 1.0
-  },
-  "webhook_url": "https://example.com/webhook"
+  }
 }
 ```
 
@@ -383,18 +557,17 @@ Authorization: Bearer <api_key>
   - Markdown content to render (GitHub-flavored).
 - `options` (object, optional)
   - Passed to Puppeteer `page.pdf()` (same as quickjob).
-- `webhook_url` (string, optional)
-  - Override user's default webhook URL for this job.
-  - Must be a valid HTTPS URL.
-  - If not provided, uses user's default webhook URL from `Users` table.
+- `webhook_url` (string, optional, **ignored**)
+  - **Note:** This parameter is ignored. Webhooks are only delivered to webhooks registered via the webhook management API (`POST /accounts/me/webhooks`). See Section 22 for webhook management.
 
 ### 2.3 Validation Rules (Summary)
 
 Same validation as `/quickjob` (authentication, account, body, business logic), plus:
 
 - **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. Note: Image conversion type is not supported in `/longjob` (returns `400 Bad Request` before conversion type validation).
+- **Credit Check (Paid Plans):** Verifies user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`). If insufficient, rejects with **403** `INSUFFICIENT_CREDITS` error. This check happens before queuing the job.
 - **Page Limit Check:** The PDF is generated synchronously before queuing to validate the page count. If the page limit is exceeded, the request is rejected immediately with `400 Bad Request` (`PAGE_LIMIT_EXCEEDED`). The job is only queued if the page limit check passes.
-- `webhook_url` (if provided) must be a valid HTTPS URL.
+- **Webhook Delivery:** Webhooks are only delivered to webhooks registered via the webhook management API (`POST /accounts/me/webhooks`). The `webhook_url` parameter in the request body is ignored. See Section 22 for webhook management.
 
 ### 2.4 Response
 
@@ -422,11 +595,10 @@ Same validation as `/quickjob` (authentication, account, body, business logic), 
 #### 2.4.2 Error Responses
 
 Same error responses as `/quickjob` (400, 401, 403, 429, 500), plus:
-- `400 Bad Request` – Invalid `webhook_url` (not HTTPS or malformed URL).
 - `400 Bad Request` – PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`). **This error is returned immediately before queuing the job.** No job record is created and no webhook will be sent.
 - `403 Forbidden` – Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`). **This error is returned before queuing the job.** No job record is created and no webhook will be sent.
 
-**Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
+**Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification (if webhooks are configured via the webhook management API).
 
 ---
 
@@ -654,7 +826,7 @@ Authorization: Bearer <jwt_token>
 - `count` (number) - Number of history records in this response
 - `next_token` (string, optional) - Pagination token for next page (null if last page)
 
-**Note:** History records are automatically deleted after 90 days (TTL).
+**Note:** History records are kept permanently (no TTL). This provides long-term retention for debugging, auditing, and troubleshooting.
 
 #### 3.4.4.2 Error Responses
 
@@ -688,11 +860,17 @@ Authorization: Bearer <jwt_token>
 **Method:** `GET`  
 **Path:** `/jobs`  
 **Query Parameters:**
-- `limit` (number, optional): Maximum number of jobs to return. Default: `50`, Max: `100`.
-- `next_token` (string, optional): Pagination token from previous response.
-- `status` (string, optional): Filter by status. Values: `"queued"`, `"processing"`, `"completed"`, `"failed"`, `"timeout"`, or omit for all.
-- `job_type` (string, optional): Filter by job type. Values: `"quick"`, `"long"`, or omit for all.
-- `truncated` (boolean, optional): Filter by truncation status. Note: Truncation is no longer performed; this field is kept for backward compatibility and will always be `false` for new jobs. `true` to show only jobs with `truncated: true` (legacy), `false` for non-truncated, omit for all.
+
+| Parameter    | Type    | Required | Default | Description |
+|-------------|---------|----------|---------|-------------|
+| `limit`      | number  | No       | `50`    | Maximum jobs to return. Min: `1`, Max: `100`. |
+| `next_token` | string  | No       | —       | Pagination token from a previous response. |
+| `status`     | string  | No       | —       | Filter by status: `queued`, `processing`, `completed`, `failed`, `timeout`. |
+| `job_type`   | string  | No       | —       | Filter by type: `quick` or `long`. |
+| `truncated`  | boolean | No       | —       | Filter by truncation: `true` or `false`. Kept for backward compatibility; new jobs always have `truncated: false`. |
+| `month`      | string  | No       | —       | Filter to a calendar month in `YYYY-MM` format (e.g. `2026-01`). Returns only jobs whose `created_at` falls within that month (UTC). Applied as a key condition on the DynamoDB index — efficient even for large job histories. |
+
+**Example:** `GET /jobs?month=2026-01` returns only jobs created in January 2026.
 
 ### 4.3 Response
 
@@ -836,12 +1014,16 @@ All error responses follow the standard error format:
 
 **Error Codes:**
 
-- **`400 Bad Request`** – Missing required fields.
+- **`400 Bad Request`** – Invalid or missing parameters.
   ```json
   {
     "error": {
-      "code": "MISSING_USER_SUB",
-      "message": "user_sub field is required"
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid user_sub: user_sub field is required",
+      "details": {
+        "parameter": "user_sub",
+        "message": "user_sub field is required"
+      }
     }
   }
   ```
@@ -850,8 +1032,26 @@ All error responses follow the standard error format:
   ```json
   {
     "error": {
-      "code": "MISSING_EMAIL",
-      "message": "email field is required"
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid email: email field is required",
+      "details": {
+        "parameter": "email",
+        "message": "email field is required"
+      }
+    }
+  }
+  ```
+
+  Or for invalid JSON:
+  ```json
+  {
+    "error": {
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid body: Invalid JSON in request body",
+      "details": {
+        "parameter": "body",
+        "message": "Invalid JSON in request body"
+      }
     }
   }
   ```
@@ -874,7 +1074,10 @@ All error responses follow the standard error format:
   {
     "error": {
       "code": "INTERNAL_SERVER_ERROR",
-      "message": "Internal server error"
+      "message": "An unexpected error occurred",
+      "details": {
+        "action_required": "retry_later"
+      }
     }
   }
   ```
@@ -1020,7 +1223,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 {
   "error": {
     "code": "NOT_FOUND",
-    "message": "Plan not found: invalid-plan-id"
+    "message": "Plan not found: invalid-plan-id",
+    "details": {
+      "action_required": "check_resource_id"
+    }
   }
 }
 ```
@@ -1030,7 +1236,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 {
   "error": {
     "code": "INTERNAL_SERVER_ERROR",
-    "message": "Internal server error"
+    "message": "An unexpected error occurred",
+    "details": {
+      "action_required": "retry_later"
+    }
   }
 }
 ```
@@ -1201,9 +1410,9 @@ Authorization: Bearer <jwt_token>
 ## 9. `GET /accounts/me/billing`
 
 **Description:**  
-Get current month's billing summary for the authenticated user. Returns accumulated billing amount and PDF count for the current month only.
+Get billing summary for the authenticated user. Returns credit balance, all-time PDF count, and calculated total amount based on plan pricing.
 
-**Note:** For a complete list of all bills/invoices, use `GET /accounts/me/bills`.
+**Note:** This endpoint uses direct reads from the `Users` table for fast, reliable data access. Credit purchase history is available via `CreditTransactions` table queries.
 
 ### 7.1 Authentication
 
@@ -1237,11 +1446,12 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0.125,
-    "pdf_count": 25,
-    "price_per_pdf": 0.01,
-    "is_paid": false
+    "monthly_quota": null,
+    "credits_balance": 10.50,
+    "free_credits_remaining": 5,
+    "total_pdf_count": 25,
+    "total_amount": 0.25,
+    "price_per_pdf": 0.01
   }
 }
 ```
@@ -1252,11 +1462,12 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0,
-    "pdf_count": 42,
-    "price_per_pdf": 0,
-    "is_paid": false
+    "monthly_quota": 50,
+    "credits_balance": 0,
+    "free_credits_remaining": null,
+    "total_pdf_count": 42,
+    "total_amount": 0,
+    "price_per_pdf": 0
   }
 }
 ```
@@ -1264,13 +1475,12 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `plan_id` (string): Current plan ID.
 - `plan_type` (string): `"free"` or `"paid"`.
-- `billing_month` (string): Current billing month in `YYYY-MM` format (e.g., `"2025-12"`).
-- `monthly_billing_amount` (number): Total amount accumulated for the current month in USD. `0` for free plan users or if no bill exists for current month.
-- `pdf_count` (number): 
-  - **For free plan users:** All-time PDF count (cumulative total since account creation, does not reset).
-  - **For paid plan users:** Current month's PDF count only.
+- `monthly_quota` (number|null): All-time quota limit from plan configuration. `null` for paid plans (unlimited). For free plans, represents the all-time quota limit (not monthly, despite the name).
+- `credits_balance` (number): Prepaid credit balance in USD. `0` for free plan users.
+- `free_credits_remaining` (number|null): Remaining free PDF credits. `null` if plan has no free credits.
+- `total_pdf_count` (number): All-time PDF count (cumulative total since account creation, does not reset).
+- `total_amount` (number): Calculated as `total_pdf_count × price_per_pdf`. `0` for free plan users.
 - `price_per_pdf` (number): Price per PDF from the plan configuration. `0` for free plan users.
-- `is_paid` (boolean): Whether the current month's bill has been paid. `false` for free plan users.
 
 #### 7.3.2 Error Responses
 
@@ -1293,11 +1503,12 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0.125,
-    "pdf_count": 25,
-    "price_per_pdf": 0.01,
-    "is_paid": false
+    "monthly_quota": null,
+    "credits_balance": 10.50,
+    "free_credits_remaining": 5,
+    "total_pdf_count": 25,
+    "total_amount": 0.25,
+    "price_per_pdf": 0.01
   }
 }
 ```
@@ -1308,26 +1519,24 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0,
-    "pdf_count": 42,
-    "price_per_pdf": 0,
-    "is_paid": false
+    "monthly_quota": 50,
+    "credits_balance": 0,
+    "free_credits_remaining": null,
+    "total_pdf_count": 42,
+    "total_amount": 0,
+    "price_per_pdf": 0
   }
 }
 ```
 
 ### 7.6 Usage Notes
 
-- **PDF Count Behavior:**
-  - **Free Plan Users:** `pdf_count` shows the **all-time total** (cumulative since account creation, does not reset).
-  - **Paid Plan Users:** `pdf_count` shows the **current month's count only** (resets each month).
-- **Current Month Summary:** For paid plan users, `monthly_billing_amount` and `pdf_count` show the current month's usage. For free plan users, `monthly_billing_amount` is always `0`, but `pdf_count` shows all-time total.
-- **Bills Table:** Monthly billing information is stored in a separate `Bills` table. Each month gets a new bill record.
-- **Billing Calculation:** For paid plan users, `monthly_billing_amount = pdf_count × price_per_pdf`.
-- **Bill Creation:** Bill records are automatically created when a paid user generates their first PDF of the month.
-- **Payment Status:** The `is_paid` flag indicates whether the bill has been paid. This can be updated when payment is processed (e.g., via Paddle integration).
-- **Billing Month Format:** The `billing_month` field uses `YYYY-MM` format (e.g., `"2025-12"` for December 2025).
+- **Data Source:** All data is read directly from the `Users` table for fast, reliable access. No expensive queries or aggregations are performed.
+- **PDF Count:** `total_pdf_count` shows the **all-time total** (cumulative since account creation, does not reset) for both free and paid users. Updated atomically by the credit deduction processor.
+- **Credit Balance:** `credits_balance` shows the current prepaid credit balance. Users purchase credits upfront, and credits are deducted after each PDF generation.
+- **Free Credits:** `free_credits_remaining` shows remaining free PDF credits (consumed before prepaid credits). `null` if the plan has no free credits.
+- **Total Amount Calculation:** `total_amount = total_pdf_count × price_per_pdf`. This represents the total value of PDFs generated (for informational purposes). `0` for free plan users.
+- **Credit Transactions:** All credit purchases and deductions are logged in the `CreditTransactions` table for audit trail and history queries.
 
 ---
 
@@ -1619,10 +1828,17 @@ curl -X GET https://api.podpdf.com/accounts/me/stats \
 
 ---
 
-## 12. `PUT /accounts/me/upgrade`
+## 12. `PUT /accounts/me/upgrade` ⚠️ DEPRECATED
+
+**Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
 **Description:**  
 Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
+
+**⚠️ Deprecation Notice:**
+This endpoint is deprecated. Users are now automatically upgraded to the `paid-standard` plan when they purchase credits via `POST /accounts/me/credits/purchase`. No separate upgrade call is needed. The upgrade happens atomically with the credit purchase.
+
+**Migration:** Use `POST /accounts/me/credits/purchase` instead. The upgrade will happen automatically when purchasing credits.
 
 ### 9.1 Authentication
 
@@ -1637,13 +1853,13 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users` table.
 
-### 9.2 HTTP Request
+### 12.2 HTTP Request
 
 **Method:** `PUT`  
 **Path:** `/accounts/me/upgrade`  
 **Content-Type:** `application/json`
 
-#### 9.2.1 Request Body
+#### 12.2.1 Request Body
 
 ```json
 {
@@ -1654,9 +1870,9 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `plan_id` (string, required): The ID of the paid plan to upgrade to (e.g., `"paid-standard"`).
 
-### 9.3 Response
+### 12.3 Response
 
-#### 9.3.1 Success Response
+#### 12.3.1 Success Response
 
 **Status Code:** `200 OK`
 
@@ -1682,7 +1898,7 @@ Authorization: Bearer <jwt_token>
   - `price_per_pdf` (number): Price per PDF in USD.
 - `upgraded_at` (string): ISO 8601 timestamp when the upgrade occurred.
 
-#### 9.3.2 Error Responses
+#### 12.3.2 Error Responses
 
 **400 Bad Request - Invalid Plan ID:**
 ```json
@@ -1745,12 +1961,14 @@ Authorization: Bearer <jwt_token>
   "error": {
     "code": "INTERNAL_SERVER_ERROR",
     "message": "Failed to upgrade account",
-    "details": {}
+    "details": {
+      "action_required": "retry_later"
+    }
   }
 }
 ```
 
-### 9.4 Example Request
+### 12.4 Example Request
 
 ```bash
 curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
@@ -1761,7 +1979,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
   }'
 ```
 
-### 9.5 Example Response
+### 12.5 Example Response
 
 ```json
 {
@@ -1776,7 +1994,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 }
 ```
 
-### 9.6 Usage Notes
+### 12.6 Usage Notes
 
 - **Plan Validation:** The endpoint validates that:
   - The plan exists in the `Plans` table.
@@ -1790,7 +2008,317 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 
 ---
 
-## 13. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
+## 13. `POST /accounts/me/credits/purchase`
+
+**Description:**  
+Purchase credits to add to the user's credit balance. Credits are used to pay for PDF generation on paid plans. The purchase is atomically processed and logged to the `CreditTransactions` table for audit purposes.
+
+**Automatic Plan Upgrade:** If the user is on a free plan, they will be automatically upgraded to the `paid-standard` plan when purchasing credits for the first time. This upgrade happens atomically with the credit purchase.
+
+### 13.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users` table.
+
+### 13.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/accounts/me/credits/purchase`  
+**Content-Type:** `application/json`
+
+#### 13.2.1 Request Body
+
+```json
+{
+  "amount": 10.50
+}
+```
+
+**Fields:**
+- `amount` (number, required): The amount of credits to purchase. Must be a positive number (e.g., `10.50` for $10.50 in credits).
+
+**Validation Rules:**
+- `amount` must be a number.
+- `amount` must be greater than 0.
+- `amount` can be a decimal (e.g., `0.01`, `10.50`, `100.00`).
+
+### 13.3 Response
+
+#### 13.3.1 Success Response
+
+**Status Code:** `200 OK`
+
+**For users already on a paid plan:**
+```json
+{
+  "message": "Credits purchased successfully",
+  "credits_balance": 25.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**For users upgraded from free to paid plan:**
+```json
+{
+  "message": "Credits purchased successfully. Account upgraded to paid plan.",
+  "credits_balance": 10.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z",
+  "upgraded": true,
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.01,
+    "free_credits": 0
+  },
+  "upgraded_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**Fields:**
+- `message` (string): Success message. Includes upgrade notification if user was upgraded.
+- `credits_balance` (number): The user's updated credit balance after the purchase.
+- `amount_purchased` (number): The amount of credits that were purchased.
+- `transaction_id` (string): Unique transaction ID (ULID) for this purchase. Can be used to query the `CreditTransactions` table.
+- `purchased_at` (string): ISO 8601 timestamp of when the purchase was processed.
+- `upgraded` (boolean, optional): Present and `true` if the user was automatically upgraded from free to paid plan.
+- `plan` (object, optional): Plan details if the user was upgraded. Contains:
+  - `plan_id` (string): Plan identifier (e.g., `"paid-standard"`).
+  - `name` (string): Plan display name.
+  - `type` (string): Plan type (`"paid"`).
+  - `price_per_pdf` (number): Price per PDF in USD.
+  - `free_credits` (number): Number of free credits included with the plan.
+- `upgraded_at` (string, optional): ISO 8601 timestamp when the upgrade occurred (only present if `upgraded` is `true`).
+
+#### 13.3.2 Error Responses
+
+**400 Bad Request - Invalid Amount:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Amount must be a positive number",
+    "details": {
+      "parameter": "amount"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid JSON:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid JSON in request body",
+    "details": {
+      "parameter": "body"
+    }
+  }
+}
+```
+
+**401 Unauthorized - Missing Token:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid JWT token"
+  }
+}
+```
+
+**403 Forbidden - Account Not Found:**
+```json
+{
+  "error": {
+    "code": "ACCOUNT_NOT_FOUND",
+    "message": "User account not found. Please create an account before using the API.",
+    "details": {
+      "action_required": "create_account"
+    }
+  }
+}
+```
+
+**500 Internal Server Error:**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Failed to purchase credits",
+    "details": {
+      "action_required": "retry_later"
+    }
+  }
+}
+```
+
+### 13.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/accounts/me/credits/purchase \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 10.50
+  }'
+```
+
+### 13.5 Example Response
+
+**For users already on a paid plan:**
+```json
+{
+  "message": "Credits purchased successfully",
+  "credits_balance": 25.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**For users upgraded from free to paid plan:**
+```json
+{
+  "message": "Credits purchased successfully. Account upgraded to paid plan.",
+  "credits_balance": 10.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z",
+  "upgraded": true,
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.01,
+    "free_credits": 0
+  },
+  "upgraded_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+### 13.6 Usage Notes
+
+- **Atomic Operation:** The credit purchase is processed atomically - the user's balance is updated and the transaction is logged in a single operation.
+- **Automatic Plan Upgrade:** If the user is on a free plan, they are automatically upgraded to the `paid-standard` plan when purchasing credits. This upgrade:
+  - Happens atomically with the credit purchase
+  - Sets `account_status` to `"paid"`
+  - Clears the `quota_exceeded` flag
+  - Sets the `upgraded_at` timestamp
+  - Grants any free credits included with the paid plan
+  - No separate upgrade endpoint call is needed
+- **Transaction Logging:** All credit purchases are logged to the `CreditTransactions` table with:
+  - `transaction_type: "purchase"`
+  - `status: "completed"`
+  - `amount: <positive number>` (the amount purchased)
+- **Credit Balance:** The `credits_balance` field in the `Users` table is atomically incremented using DynamoDB's `if_not_exists` to handle users who don't have a balance yet.
+- **Transaction History:** You can query the `CreditTransactions` table using the `UserIdIndex` GSI to retrieve a user's complete purchase and deduction history.
+- **Idempotency:** Each purchase generates a unique `transaction_id` (ULID). If you need idempotency for payment processing, you should implement it at the payment gateway level before calling this endpoint.
+- **Credit Usage:** Credits are automatically deducted when PDFs are generated on paid plans. See the credit-based billing documentation for details.
+
+---
+
+## 14. `GET /accounts/me/credits/packages`
+
+**Description:**  
+Get all available credit packages from the credit mappings table. This endpoint returns all active credit packages that users can purchase, sorted by credit amount in ascending order.
+
+**Method:** `GET`  
+**Path:** `/accounts/me/credits/packages`
+
+### 14.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. Anyone can view available credit packages.
+
+### 14.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/credits/packages`  
+**Headers:** None required
+
+### 14.3 HTTP Response
+
+**Success Response (200 OK):**
+```json
+{
+  "packages": [
+    {
+      "price_id": "pri_01ke516mpxe3dy3m67dhjpb1hc",
+      "credits_amount": 1000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    },
+    {
+      "price_id": "pri_test_50usd",
+      "credits_amount": 6000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Fields:**
+- `packages` (array): List of available credit packages, sorted by `credits_amount` in ascending order.
+  - `price_id` (string): Paddle price ID. Use this when creating a transaction with Paddle.
+  - `credits_amount` (number): Number of credits granted when this package is purchased.
+  - `active` (boolean): Whether the package is active. Only active packages are returned.
+  - `created_at` (string, optional): ISO 8601 timestamp when the package was created.
+  - `updated_at` (string, optional): ISO 8601 timestamp when the package was last updated.
+- `count` (number): Total number of active packages returned.
+
+**Error Responses:**
+- `500 Internal Server Error` – Server-side failure retrieving packages.
+
+**Notes:**
+- Only active packages (`active !== false`) are returned.
+- Packages are sorted by `credits_amount` in ascending order (smallest first).
+- This endpoint is public and does not require authentication.
+- The `price_id` can be used with Paddle to create a transaction for purchasing credits.
+
+### 14.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/credits/packages
+```
+
+### 14.5 Example Response
+
+```json
+{
+  "packages": [
+    {
+      "price_id": "pri_01ke516mpxe3dy3m67dhjpb1hc",
+      "credits_amount": 1000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+## 15. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
 
 **Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
@@ -1890,7 +2418,7 @@ The response includes additional fields indicating deprecation:
 
 ---
 
-## 14. `DELETE /accounts/me`
+## 15. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
@@ -1934,7 +2462,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 15. API Key Management
+## 17. API Key Management
 
 The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
 
@@ -1942,12 +2470,12 @@ The following endpoints allow users to create, list, and revoke API keys for pro
 
 ---
 
-### 15.1 `POST /accounts/me/api-keys`
+### 17.1 `POST /accounts/me/api-keys`
 
 **Description:**  
 Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
 
-#### 15.1.1 Authentication
+#### 17.1.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1961,7 +2489,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.1.2 HTTP Request
+#### 17.1.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/accounts/me/api-keys`  
@@ -1977,7 +2505,7 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
 
-#### 15.1.3 Response
+#### 17.1.3 Response
 
 **Success Response (201 Created):**
 ```json
@@ -2009,12 +2537,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 15.2 `GET /accounts/me/api-keys`
+### 17.2 `GET /accounts/me/api-keys`
 
 **Description:**  
 List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
 
-#### 15.2.1 Authentication
+#### 17.2.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -2028,12 +2556,12 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.2.2 HTTP Request
+#### 17.2.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me/api-keys`
 
-#### 15.2.3 Response
+#### 17.2.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -2080,12 +2608,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 15.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+### 17.3 `DELETE /accounts/me/api-keys/{api_key_id}`
 
 **Description:**  
 Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
 
-#### 15.3.1 Authentication
+#### 17.3.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -2099,7 +2627,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.3.2 HTTP Request
+#### 17.3.2 HTTP Request
 
 **Method:** `DELETE`  
 **Path:** `/accounts/me/api-keys/{api_key_id}`
@@ -2107,7 +2635,7 @@ Authorization: Bearer <jwt_token>
 **Path Parameters:**
 - `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
 
-#### 15.3.3 Response
+#### 17.3.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -2138,43 +2666,473 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 16. Health Check (Optional, Internal)
+## 17.5 `GET /me`
 
-> **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
+**Description:**  
+Returns the authenticated user's profile (id, email, name). Primarily used by Zapier and third-party integrations to verify API key authentication and retrieve the identity of the key owner.
 
 **Method:** `GET`  
-**Path:** `/health` (could be internal-only or protected)
+**Path:** `/me`
 
-### 9.1 Purpose
+### Authentication
 
-- Verify that the Lambda function is reachable and basic dependencies are responsive (e.g., quick check to DynamoDB).
+- **Type:** API Key **OR** JWT Bearer Token
+- **Note:** No API Gateway authorizer is used. Authentication is handled directly in Lambda.
+- **Headers (choose one):**
 
-### 9.2 Response (Example)
+**Option 1: API Key**
+```http
+X-API-Key: <api_key>
+```
+or
+```http
+Authorization: Bearer <api_key>
+```
+
+**Option 2: JWT Token**
+```http
+Authorization: Bearer <id_token>
+```
+
+### Request
+
+No request body. No query parameters.
+
+### Success Response
+
+**Status:** `200 OK`
 
 ```json
 {
-  "status": "ok",
-  "uptime_ms": 123456,
-  "dependencies": {
-    "dynamodb": "ok"
+  "id": "01HXQ4...",
+  "email": "user@example.com",
+  "name": "Jane Doe"
+}
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | User's internal ID (ULID) |
+| `email` | string | User's email address |
+| `name` | string \| null | User's display name (if set) |
+
+### Error Responses
+
+**401 Unauthorized** — Missing or invalid API key / JWT token:
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid API key."
   }
 }
 ```
 
-**Status Codes:**
-- `200 OK` – Service healthy
-- `500 Internal Server Error` – Health check failed
+**404 Not Found** — API key is valid but the user account no longer exists:
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "User account not found."
+  }
+}
+```
 
-Implementation of `/health` is left to the service owner and may be internal-only (not exposed via public API Gateway).
+**500 Internal Server Error:**
+```json
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "Internal server error."
+  }
+}
+```
+
+### Usage Example (Zapier Auth Test)
+
+```http
+GET /me
+X-API-Key: pk_live_abc123...
+```
+
+```json
+{
+  "id": "01HXQ4...",
+  "email": "user@example.com",
+  "name": null
+}
+```
 
 ---
 
-## 17. `POST /signup`
+## 18. Health Check
+
+**Description:**  
+Health check endpoint to verify service availability and basic system status.
+
+**Method:** `GET`  
+**Path:** `/health`
+
+### 16.1 Authentication
+
+- **Type:** API Key (required)
+- **Header:**
+```http
+X-API-Key: <api_key>
+```
+
+**Requirements:**
+- API key must be valid and active (not revoked)
+- API key must exist in the `ApiKeys` DynamoDB table
+- API key format: `pk_live_...` (production) or `pk_test_...` (development)
+- **Note:** JWT tokens are not accepted for this endpoint. Only API keys are supported.
+
+### 16.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/health`
+
+**Headers:**
+- `X-API-Key` (required): Valid API key
+
+### 16.3 HTTP Response
+
+#### 16.3.1 Success Response (200 OK)
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2025-12-21T10:30:00.000Z",
+  "uptime_ms": 123456
+}
+```
+
+**Fields:**
+- `status` (string): Always `"ok"` when service is healthy
+- `timestamp` (string): ISO 8601 timestamp of the health check
+- `uptime_ms` (number): Process uptime in milliseconds
+
+#### 16.3.2 Error Responses
+
+**401 Unauthorized - Missing API Key**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication. Provide either JWT token or API key."
+  }
+}
+```
+
+**401 Unauthorized - Invalid API Key**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication. Provide either JWT token or API key."
+  }
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "status": "error",
+  "message": "Health check failed"
+}
+```
+
+### 16.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/health \
+  -H "X-API-Key: pk_live_abc123..."
+```
+
+### 16.5 Example Response
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2025-12-21T10:30:00.000Z",
+  "uptime_ms": 123456
+}
+```
+
+### 16.6 Usage Notes
+
+- **Purpose:** This endpoint is used for monitoring and health checks
+- **Authentication:** Requires a valid API key (created via `POST /accounts/me/api-keys`)
+- **Rate Limiting:** Subject to the same rate limits as other authenticated endpoints
+- **Monitoring:** Can be used by monitoring systems to verify service availability
+
+**Status Codes:**
+- `200 OK` – Service healthy
+- `401 Unauthorized` – Missing or invalid API key
+- `500 Internal Server Error` – Health check failed
+
+---
+
+## 19. `POST /webhooks/paddle`
+
+**Description:**  
+Paddle webhook endpoint for payment events. Receives webhook notifications from Paddle when transactions are completed or refunds are processed. Automatically grants credits on successful payments and revokes credits on refunds.
+
+**Note:** This is a public endpoint (no JWT required) but validates requests via deterministic signature verification. Similar to how `/health` validates via API key, this endpoint validates via Paddle's signature header.
+
+### 19.1 Authentication
+
+- **Type:** None (public endpoint, validated via signature)
+- **Header:**
+```http
+paddle-signature: ts=1234567890,v1=abc123...
+```
+
+**Requirements:**
+- Signature header must be present and valid
+- Signature is verified using Paddle's deterministic signature scheme: `SHA256(timestamp + rawBody)`
+- No webhook secret or public key is required (Paddle uses deterministic signature validation)
+
+### 19.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/webhooks/paddle`  
+**Content-Type:** `application/json`
+
+**Headers:**
+- `paddle-signature` (required): Signature header in format `ts=1234567890,v1=abc123...` where `v1` is `SHA256(timestamp + rawBody)`
+- `Content-Type`: `application/json`
+
+**Request Body:**
+Paddle webhook payload (JSON). Key fields:
+- `event_type`: Event type (e.g., `transaction.completed`, `adjustment.created`, `adjustment.updated`)
+- `event_id`: Unique event identifier
+- `occurred_at`: ISO 8601 timestamp when event occurred
+- `data`: Event data containing:
+  - For `transaction.completed`:
+    - `id`: Transaction ID
+    - `customer_id`: Customer ID
+    - `customer`: Customer object with `email`
+    - `items`: Array of items with `price_id`
+    - `totals`: Transaction totals with `total` (USD amount)
+  - For `adjustment.created` / `adjustment.updated`:
+    - `id`: Adjustment ID
+    - `transaction_id`: Original transaction ID
+    - `action`: Adjustment action (e.g., `"refund"`)
+    - `status`: Adjustment status (e.g., `"approved"`)
+    - `totals`: Adjustment totals with `total` (refund amount in USD)
+
+**Example Request:**
+```json
+{
+  "event_id": "evt_01abc123",
+  "event_type": "transaction.completed",
+  "occurred_at": "2025-01-15T10:30:00Z",
+  "data": {
+    "id": "txn_01abc123",
+    "customer_id": "ctm_01abc123",
+    "customer": {
+      "email": "user@example.com"
+    },
+    "items": [
+      {
+        "price_id": "pri_test_10usd",
+        "quantity": 1
+      }
+    ],
+    "status": "completed",
+    "totals": {
+      "total": "10.00",
+      "currency_code": "USD"
+    }
+  }
+}
+```
+
+### 19.3 HTTP Response
+
+#### 18.3.1 Success Response (200 OK)
+
+**For transaction.completed:**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "transaction_record_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+}
+```
+
+**For adjustment events (refunds):**
+```json
+{
+  "status": "processed",
+  "event_type": "adjustment.created",
+  "adjustment_id": "adj_01abc123",
+  "transaction_id": "txn_01abc123",
+  "credits_revoked": 700
+}
+```
+
+**Fields:**
+- `status` (string): Processing status (`"processed"`, `"error"`, or `"skipped"`)
+- `event_type` (string): Paddle event type
+- `transaction_id` (string, optional): Paddle transaction ID (for transaction.completed events)
+- `transaction_record_id` (string, optional): Internal transaction record ID (ULID)
+- `adjustment_id` (string, optional): Paddle adjustment ID (for adjustment events)
+- `credits_revoked` (number, optional): Credits revoked for refund events
+- `skipped` (boolean, optional): `true` if event was skipped (already processed)
+- `reason` (string, optional): Reason for skipping (e.g., `"already_processed"`, `"not_a_refund"`)
+
+#### 18.3.2 Error Responses
+
+**401 Unauthorized - Missing Signature:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication",
+    "details": {
+      "action_required": "verify_signature_header"
+    }
+  }
+}
+```
+
+**401 Unauthorized - Invalid Signature:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Invalid webhook signature",
+    "details": {
+      "action_required": "verify_signature_format"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid Payload:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid JSON in request body",
+    "details": {
+      "parameter": "body",
+      "message": "Invalid JSON in request body"
+    }
+  }
+}
+```
+
+**Error Status Codes:**
+- `200 OK` – Webhook processed (success or non-critical error - Paddle expects 200 to prevent retries)
+- `401 Unauthorized` – Invalid or missing signature
+- `400 Bad Request` – Invalid payload format
+
+**Note:** Most processing errors return `200 OK` to prevent Paddle from retrying. Only signature validation failures return `401`, and only invalid JSON returns `400`.
+
+### 19.4 Event Processing
+
+**Supported Events:**
+- `transaction.completed`: Payment completed, grants credits to user
+- `adjustment.created`: Adjustment created (processes if refund and approved)
+- `adjustment.updated`: Adjustment updated (processes if refund and approved)
+- Other events: Logged and ignored (return 200)
+
+**Processing Logic:**
+- **Transaction Completed:**
+  1. Validates signature
+  2. Extracts transaction ID, customer email, and price ID
+  3. Checks idempotency (prevents double crediting)
+  4. Looks up user by email
+  5. Grants credits based on price ID mapping
+  6. Creates credit ledger entry
+  7. Logs transaction to CreditTransactions table
+
+- **Adjustment Events (Refunds):**
+  1. Validates signature
+  2. Filters for refund adjustments only (`action === 'refund'` and `status === 'approved'`)
+  3. Checks idempotency (prevents double processing)
+  4. Retrieves credit ledger for original transaction
+  5. Calculates unused credits (granted - used - revoked)
+  6. Revokes all unused credits (full refund only)
+  7. Updates user credit balance and ledger
+  8. Logs refund transaction
+
+### 19.5 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/webhooks/paddle \
+  -H "Content-Type: application/json" \
+  -H "paddle-signature: ts=1234567890,v1=abc123..." \
+  -d '{
+    "event_id": "evt_01abc123",
+    "event_type": "transaction.completed",
+    "occurred_at": "2025-01-15T10:30:00Z",
+    "data": {
+      "id": "txn_01abc123",
+      "customer": {
+        "email": "user@example.com"
+      },
+      "items": [
+        {
+          "price_id": "pri_test_10usd",
+          "quantity": 1
+        }
+      ]
+    }
+  }'
+```
+
+### 19.6 Example Response
+
+**Success:**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "transaction_record_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+}
+```
+
+**Skipped (Already Processed):**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "skipped": true,
+  "reason": "already_processed"
+}
+```
+
+### 19.7 Usage Notes
+
+- **Signature Verification:** Paddle uses deterministic signature validation (no secret or public key needed). The signature is computed as `SHA256(timestamp + rawBody)` and compared using timing-safe comparison.
+- **Idempotency:** Both transaction and refund processing are idempotent. Duplicate webhook deliveries are safely ignored.
+- **Credit Granting:** Credits are granted automatically on `transaction.completed` events. The credit amount is determined by the price ID mapping (initially hardcoded, can be moved to SSM later).
+- **Refund Processing:** Only approved refund adjustments trigger credit revocation. The system revokes all unused credits (full refunds only - partial refunds are not supported).
+- **User Lookup:** Users are looked up by email using the `EmailIndex` GSI on the Users table.
+- **Error Handling:** Most errors return `200 OK` to prevent Paddle retries. Only signature validation failures return `401`.
+- **Webhook Configuration:** Configure this endpoint URL in your Paddle dashboard (sandbox or production) to receive webhook events.
+
+**Status Codes:**
+- `200 OK` – Webhook processed (success or non-critical error)
+- `401 Unauthorized` – Invalid or missing signature
+- `400 Bad Request` – Invalid payload format
+
+---
+
+## 19. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
 
-### 17.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to create new user accounts.
@@ -2330,17 +3288,17 @@ curl -X POST https://api.podpdf.com/signup \
 
 ---
 
-## 18. `POST /confirm-signup`
+## 19. `POST /confirm-signup`
 
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
 
-### 18.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to confirm email addresses after signup.
 
-### 18.2 HTTP Request
+### 19.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/confirm-signup`  
@@ -2359,7 +3317,7 @@ Confirm user email with the verification code received via email. After successf
 - `email` (string, required) - User's email address (same email used in signup)
 - `confirmationCode` (string, required) - 6-digit verification code received via email
 
-### 18.3 HTTP Response
+### 19.3 HTTP Response
 
 #### 18.3.1 Success Response (200 OK)
 
@@ -2485,7 +3443,7 @@ curl -X POST https://api.podpdf.com/confirm-signup \
 
 ---
 
-## 19. `POST /signin`
+## 20. `POST /signin`
 
 **Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
@@ -2752,6 +3710,318 @@ curl -X POST https://api.podpdf.com/refresh \
 
 ---
 
+## 21. `POST /forgot-password`
+
+**Description:**  
+Initiate a password reset flow. If the email is associated with a confirmed Cognito account, a 6-digit verification code is sent to the email address. The response is intentionally identical whether or not the email exists, to prevent email enumeration attacks.
+
+### 21.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is used by users who have forgotten their password and cannot sign in.
+
+### 21.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/forgot-password`  
+**Content-Type:** `application/json`
+
+#### 21.2.1 Request Body
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Fields:**
+- `email` (string, required) - The email address associated with the account
+
+### 21.3 HTTP Response
+
+#### 21.3.1 Success Response (200 OK)
+
+```json
+{
+  "message": "If an account with that email exists, a password reset code has been sent.",
+  "email": "user@example.com"
+}
+```
+
+**Fields:**
+- `message` (string) - Intentionally vague success message (does not confirm whether the email exists)
+- `email` (string) - The email address from the request (echoed back)
+
+**Security Note:**  
+The same 200 response is returned regardless of whether the email exists in Cognito. Cognito exceptions like `UserNotFoundException` and `NotAuthorizedException` are caught and treated as success to prevent email enumeration attacks.
+
+#### 21.3.2 Error Responses
+
+**400 Bad Request - Missing Email**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid email: Missing required field",
+    "details": {
+      "parameter": "email",
+      "message": "Missing required field"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid Email Format**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid email: Invalid email format",
+    "details": {
+      "parameter": "email",
+      "message": "Invalid email format"
+    }
+  }
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many password reset attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Password reset request failed. Please try again later.",
+    "details": {
+      "action_required": "retry_later"
+    }
+  }
+}
+```
+
+### 21.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com"
+  }'
+```
+
+### 21.5 Example Response
+
+```json
+{
+  "message": "If an account with that email exists, a password reset code has been sent.",
+  "email": "user@example.com"
+}
+```
+
+### 21.6 Usage Notes
+
+- **Email Enumeration Prevention:** The response does not reveal whether the email is registered. Attackers cannot use this endpoint to discover valid email addresses.
+- **Verification Code:** If the email exists, Cognito sends a 6-digit code to the user's email. The code expires after 1 hour (Cognito default).
+- **Next Step:** After receiving the code, the user should call `POST /confirm-forgot-password` with the code and a new password.
+- **Rate Limiting:** Cognito enforces rate limits on forgot password requests. Too many attempts will result in a 429 error.
+- **Unconfirmed Users:** If the user has not confirmed their email (via `POST /confirm-signup`), the same 200 response is returned without sending a code.
+
+**Status Codes:**
+- `200 OK` – Password reset code sent (or email doesn't exist — same response for security)
+- `400 Bad Request` – Missing or invalid email
+- `429 Too Many Requests` – Too many password reset attempts
+- `500 Internal Server Error` – Password reset service error
+
+---
+
+## 21. `POST /confirm-forgot-password`
+
+**Description:**  
+Complete the password reset flow by submitting the verification code (received via email from `POST /forgot-password`) and a new password. On success, the user's password is updated in Cognito and they can immediately sign in with the new password via `POST /signin`.
+
+### 21.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. The verification code serves as proof of email ownership.
+
+### 21.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/confirm-forgot-password`  
+**Content-Type:** `application/json`
+
+#### 21.2.1 Request Body
+
+```json
+{
+  "email": "user@example.com",
+  "confirmationCode": "123456",
+  "newPassword": "NewSecurePassword123!"
+}
+```
+
+**Fields:**
+- `email` (string, required) - The email address associated with the account
+- `confirmationCode` (string, required) - 6-digit verification code received via email
+- `newPassword` (string, required) - The new password (must meet Cognito password policy: minimum 8 characters, uppercase, lowercase, numbers, and symbols)
+
+### 21.3 HTTP Response
+
+#### 21.3.1 Success Response (200 OK)
+
+```json
+{
+  "message": "Password has been reset successfully. You can now sign in with your new password.",
+  "email": "user@example.com"
+}
+```
+
+**Fields:**
+- `message` (string) - Success message
+- `email` (string) - The email address from the request (echoed back)
+
+#### 21.3.2 Error Responses
+
+**400 Bad Request - Missing Fields**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid email/confirmationCode/newPassword: Missing required fields",
+    "details": {
+      "parameter": "email/confirmationCode/newPassword",
+      "message": "Missing required fields"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid Verification Code**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid confirmationCode: Invalid verification code. Please check your email and try again.",
+    "details": {
+      "parameter": "confirmationCode",
+      "message": "Invalid verification code. Please check your email and try again."
+    }
+  }
+}
+```
+
+**400 Bad Request - Expired Verification Code**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid confirmationCode: Verification code has expired. Please request a new code.",
+    "details": {
+      "parameter": "confirmationCode",
+      "message": "Verification code has expired. Please request a new code."
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid Password**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid newPassword: Password does not meet requirements. Password must be at least 8 characters and contain uppercase, lowercase, numbers, and symbols.",
+    "details": {
+      "parameter": "newPassword",
+      "message": "Password does not meet requirements. Password must be at least 8 characters and contain uppercase, lowercase, numbers, and symbols."
+    }
+  }
+}
+```
+
+**400 Bad Request - User Not Found / No Pending Reset**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid email: No pending password reset for this email. Please request a new code.",
+    "details": {
+      "parameter": "email",
+      "message": "No pending password reset for this email. Please request a new code."
+    }
+  }
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Password reset failed. Please try again later.",
+    "details": {
+      "action_required": "retry_later"
+    }
+  }
+}
+```
+
+### 21.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/confirm-forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "confirmationCode": "123456",
+    "newPassword": "NewSecurePassword123!"
+  }'
+```
+
+### 21.5 Example Response
+
+```json
+{
+  "message": "Password has been reset successfully. You can now sign in with your new password.",
+  "email": "user@example.com"
+}
+```
+
+### 21.6 Usage Notes
+
+- **Password Requirements:** The new password must meet the Cognito password policy:
+  - At least 8 characters
+  - At least one uppercase letter
+  - At least one lowercase letter
+  - At least one number
+  - At least one symbol
+- **Code Expiry:** Verification codes expire after 1 hour (Cognito default). If the code has expired, the user must call `POST /forgot-password` again to request a new code.
+- **Code Mismatch:** If the verification code is incorrect, the user can retry with the correct code. After too many failed attempts, Cognito may temporarily lock the account.
+- **Sign In:** After a successful password reset, the user can immediately sign in via `POST /signin` with their new password.
+- **Rate Limiting:** Cognito enforces rate limits on confirm forgot password requests. Too many attempts will result in a 429 error.
+
+**Status Codes:**
+- `200 OK` – Password reset successfully
+- `400 Bad Request` – Missing fields, invalid code, expired code, weak password, or user not found
+- `429 Too Many Requests` – Too many attempts
+- `500 Internal Server Error` – Password reset service error
+
+---
+
 ## Webhook Payload Format
 
 When a long job completes, a POST request is sent to the configured webhook URL with the following payload:
@@ -2778,128 +4048,6 @@ When a long job completes, a POST request is sent to the configured webhook URL 
 **Webhook Response:**
 - Webhook endpoint should return `200 OK` to confirm receipt
 - Any other status code will trigger retries
-
----
-
-## 21. `POST /webhook/job-done`
-
-**Description:**  
-Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
-
-### 21.1 Authentication
-
-- **Type:** None (public endpoint with payload validation)
-- **Security:** Payload structure validation and job verification prevent abuse
-- **Note:** This endpoint is intended for internal use by PodPDF services. External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22).
-
-### 21.2 HTTP Request
-
-**Method:** `POST`  
-**Path:** `/webhook/job-done`  
-**Content-Type:** `application/json`
-
-#### 21.2.1 Request Body
-
-The webhook payload sent from api.podpdf.com when a job completes:
-
-```json
-{
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed",
-  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
-  "s3_url_expires_at": "2025-12-21T11:32:15Z",
-  "pages": 150,
-  "mode": "html",
-  "truncated": false,
-  "created_at": "2025-12-21T10:30:00Z",
-  "completed_at": "2025-12-21T10:32:15Z"
-}
-```
-
-**Required Fields:**
-- `job_id` (string, required): UUID of the completed job
-- `status` (string, required): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
-
-**Optional Fields:**
-- `pages` (integer, optional): Number of pages in the generated PDF
-- `mode` (string, optional): Input mode - one of: `html`, `markdown`, `image`
-- `truncated` (boolean, optional): Whether the PDF was truncated due to page limit
-- `s3_url` (string, optional): Signed S3 URL for downloading the PDF (for long jobs)
-- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when the S3 URL expires
-- `created_at` (string, optional): ISO 8601 timestamp when the job was created
-- `completed_at` (string, optional): ISO 8601 timestamp when the job completed
-- `error_message` (string, optional): Error message if job failed
-
-### 21.3 Validation
-
-The endpoint performs comprehensive validation to prevent abuse:
-
-1. **Structure Validation:**
-   - Request body must be valid JSON object
-   - Required fields must be present
-   - Field types must match expected types
-
-2. **Format Validation:**
-   - `job_id` must be a valid UUID format
-   - `status` must be one of the valid status values
-   - Timestamps must be in ISO 8601 format
-   - URLs must be valid URL format
-   - Numbers must be valid integers
-
-3. **Size Validation:**
-   - Payload size limited to 100KB maximum
-
-4. **Job Verification:**
-   - Job must exist in the system
-   - Job status must match the webhook payload status (prevents replay attacks)
-
-### 21.4 Response
-
-#### 21.4.1 Success Response
-
-- **Status:** `200 OK`
-- **Content-Type:** `application/json`
-- **Body:**
-
-```json
-{
-  "message": "Webhook received successfully",
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed"
-}
-```
-
-#### 21.4.2 Error Responses
-
-- `400 Bad Request` – Invalid payload structure, missing required fields, invalid field types, or payload size exceeds limit
-  - Error code: `INVALID_PARAMETER`
-  - Details include specific validation failure reason
-
-- `404 Not Found` – Job not found in system
-  - Error code: `JOB_NOT_FOUND`
-
-- `400 Bad Request` – Status mismatch (webhook status doesn't match actual job status)
-  - Error code: `INVALID_PARAMETER`
-  - Prevents replay attacks with outdated statuses
-
-- `500 Internal Server Error` – Server-side processing error
-  - Error code: `INTERNAL_SERVER_ERROR`
-
-### 21.5 Security Features
-
-- **Payload Structure Validation:** Validates all fields before processing
-- **Job Existence Verification:** Ensures job exists before processing
-- **Status Mismatch Detection:** Prevents replay attacks by verifying status matches
-- **Size Limits:** Prevents abuse with oversized payloads (100KB max)
-- **Comprehensive Logging:** All requests logged with source IP for monitoring
-
-### 21.6 Usage Notes
-
-- This endpoint is designed for internal PodPDF services
-- External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22 for webhook management)
-- The endpoint validates all webhook payloads before processing
-- Failed validations return appropriate error codes without processing
-- All webhook receipts are logged for monitoring and debugging
 
 ---
 
@@ -3299,7 +4447,7 @@ Get delivery history for a webhook.
 - `count` (number) - Number of history records in this response
 - `next_token` (string, optional) - Pagination token for next page
 
-**Note:** History records are automatically deleted after 90 days (TTL).
+**Note:** History records are kept permanently (no TTL). This provides long-term retention for debugging, auditing, and troubleshooting.
 
 #### 22.6.3.2 Error Responses
 
@@ -3443,3 +4591,131 @@ Webhook receivers should:
 1. Validate payload structure (check required fields and types)
 2. Use `delivery_id` from `X-Webhook-Delivery-Id` header for idempotency
 3. Return `200 OK` quickly, process asynchronously if needed
+
+---
+
+## 23. `GET /accounts/me/usage`
+
+**Description:**  
+Returns the authenticated user's monthly PDF generation counts, broken down by free-plan usage and paid-plan usage. Useful for dashboards and per-month analytics.
+
+### 23.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+
+### 23.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/usage`
+
+### 23.3 Query Parameters
+
+| Parameter | Type    | Required | Default | Constraints       | Description                                              |
+|-----------|---------|----------|---------|-------------------|----------------------------------------------------------|
+| `months`  | integer | No       | `3`     | Min: `1`, Max: `12` | Number of calendar months to return (including current) |
+
+### 23.4 Response
+
+#### 23.4.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "usage": [
+    {
+      "month": "2025-04",
+      "free_pdf_count": 3,
+      "paid_pdf_count": 4,
+      "total_pdf_count": 7
+    },
+    {
+      "month": "2025-03",
+      "free_pdf_count": 0,
+      "paid_pdf_count": 23,
+      "total_pdf_count": 23
+    },
+    {
+      "month": "2025-02",
+      "free_pdf_count": 15,
+      "paid_pdf_count": 0,
+      "total_pdf_count": 15
+    }
+  ]
+}
+```
+
+**Response Fields:**
+
+| Field                     | Type    | Description                                                  |
+|---------------------------|---------|--------------------------------------------------------------|
+| `usage`                   | array   | Array of monthly usage entries, newest month first           |
+| `usage[].month`           | string  | Calendar month in `YYYY-MM` format                           |
+| `usage[].free_pdf_count`  | integer | PDFs generated while the user was on a free plan             |
+| `usage[].paid_pdf_count`  | integer | PDFs generated while the user was on a paid plan             |
+| `usage[].total_pdf_count` | integer | Sum of `free_pdf_count` and `paid_pdf_count`                 |
+
+**Notes:**
+- Always returns exactly `months` entries, even if the user had no activity. Months with no usage have all counts set to `0`.
+- Entries are ordered newest to oldest (current month first).
+- `free_pdf_count` and `paid_pdf_count` are tracked separately based on the user's plan at the time each PDF was generated, so a user who upgraded mid-month will have both counters populated for that month.
+
+#### 23.4.2 Error Responses
+
+| Status | Code                   | Reason                                         |
+|--------|------------------------|------------------------------------------------|
+| `400`  | `INVALID_PARAMETER`    | `months` is not an integer between 1 and 12    |
+| `401`  | `UNAUTHORIZED`         | Missing or invalid JWT token                   |
+| `403`  | `ACCOUNT_NOT_FOUND`    | No account record found for this user          |
+| `500`  | `INTERNAL_SERVER_ERROR`| Unexpected server error                        |
+
+**Example 400 Response:**
+
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid months: must be an integer between 1 and 12"
+  }
+}
+```
+
+### 23.5 Example Requests
+
+**Default (last 3 months):**
+
+```http
+GET /accounts/me/usage
+Authorization: Bearer <jwt_token>
+```
+
+**Last 6 months:**
+
+```http
+GET /accounts/me/usage?months=6
+Authorization: Bearer <jwt_token>
+```
+
+**cURL:**
+
+```bash
+curl -X GET "https://api.podpdf.com/accounts/me/usage?months=6" \
+  -H "Authorization: Bearer <jwt_token>"
+```
+
+### 23.6 Implementation Notes
+
+- Usage is tracked atomically in the `PdfUsageMonthlyTable` DynamoDB table (partition key: `user_id`, sort key: `month`).
+- The counter is incremented inside the credit-deduction-processor Lambda after every successful PDF generation — the same place `total_pdf_count` on the user record is updated.
+- The increment is non-fatal: if writing to this table fails, the PDF job is unaffected.
