@@ -196,6 +196,8 @@ const response = await fetch('https://api.podpdf.com/quickjob', {
 | `options.printBackground` | boolean | ❌ | Print background graphics (default: `true`) |
 | `options.scale` | number | ❌ | Scale of rendering (default: `1.0`) |
 | `options.landscape` | boolean | ❌ | Landscape orientation (default: `false`) |
+| `options.preferCSSPageSize` | boolean | ❌ | Use page size from CSS instead of `format` (default: `false`) |
+| `store` | boolean | ❌ | When `true`, upload the PDF to S3 and return a JSON response with a signed download URL instead of binary. URL expires after 1 hour. (default: `false`) |
 
 **For Images (Multipart form-data):**
 
@@ -218,21 +220,42 @@ const response = await fetch('https://api.podpdf.com/quickjob', {
 
 ## Response
 
-### Success (200 OK)
+### Success — Binary (default)
 
-You receive the PDF file directly as binary data.
+Without `store`, you receive the PDF file directly as binary data.
 
 **Headers:**
 ```http
 Content-Type: application/pdf
 Content-Disposition: inline; filename="document.pdf"
 X-PDF-Pages: 5
+X-PDF-Truncated: false
 X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 ```
 
 :::tip Page Count
 The `X-PDF-Pages` header tells you how many pages were generated.
 :::
+
+### Success — Stored (`store: true`)
+
+When you pass `"store": true`, the PDF is uploaded to S3 and you receive a JSON response instead of binary. Use this when you need to share or download the PDF later rather than streaming it directly.
+
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "pages": 5,
+  "truncated": false,
+  "download_url": "https://podpdf-prod-pdfs.s3.eu-central-1.amazonaws.com/9f0a4b78...pdf?X-Amz-Signature=...",
+  "download_url_expires_at": "2025-12-21T11:30:00.000Z"
+}
+```
+
+:::warning URL Expiry
+The signed `download_url` expires after **1 hour**. After that the file is inaccessible and deleted within 24 hours. Download or share it before it expires.
+:::
+
+If the S3 upload fails, `download_url` and `download_url_expires_at` will be `null`.
 
 ### Timeout (408 Request Timeout)
 
@@ -276,6 +299,7 @@ If you hit the timeout, your document is too large for QuickJob.
 | 403 | `CONVERSION_TYPE_NOT_ENABLED` | Conversion type not enabled for plan | Check plan's `enabled_conversion_types` |
 | 403 | `RATE_LIMIT_EXCEEDED` | Too many requests | Wait 1 minute (free tier: 20/min) |
 | 403 | `QUOTA_EXCEEDED` | Free tier quota used up | Upgrade to paid plan via dashboard |
+| 403 | `INSUFFICIENT_CREDITS` | Not enough credits on paid plan | Top up credits via dashboard |
 | 408 | `QUICKJOB_TIMEOUT` | Took too long | Use /longjob instead |
 | 422 | `URL_FETCH_FAILED` | DNS failure or connection refused when fetching URL | Check the URL is reachable |
 | 422 | `URL_FETCH_TIMEOUT` | Remote server did not respond within 10 seconds | Ensure the URL responds quickly |
@@ -285,6 +309,62 @@ If you hit the timeout, your document is too large for QuickJob.
 | 500 | `INTERNAL_SERVER_ERROR` | Server error | Try again later |
 
 ## Complete Examples
+
+### Store PDF to S3 (cURL)
+
+```bash
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "X-API-Key: $PODPDF_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_type": "html",
+    "html": "<h1>Invoice</h1><p>Amount: $100</p>",
+    "store": true
+  }'
+# Returns JSON with download_url (expires in 1 hour)
+```
+
+### Store PDF to S3 (JavaScript)
+
+```javascript
+const response = await fetch('https://api.podpdf.com/quickjob', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': process.env.PODPDF_API_KEY,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    input_type: 'html',
+    html: '<h1>Invoice</h1>',
+    store: true
+  })
+});
+
+const { job_id, download_url, download_url_expires_at } = await response.json();
+console.log('Download:', download_url); // valid for 1 hour
+```
+
+### Store PDF to S3 (Python)
+
+```python
+import requests, os
+
+response = requests.post(
+    'https://api.podpdf.com/quickjob',
+    headers={
+        'X-API-Key': os.getenv('PODPDF_API_KEY'),
+        'Content-Type': 'application/json'
+    },
+    json={
+        'input_type': 'html',
+        'html': '<h1>Invoice</h1>',
+        'store': True
+    }
+)
+
+data = response.json()
+print('Download URL:', data['download_url'])  # expires in 1 hour
+```
 
 ### URL to PDF (cURL)
 
@@ -548,6 +628,8 @@ if ($httpCode == 200) {
 ## Tips & Best Practices
 
 ### ✅ DO:
+- Use `store: true` when you need to share the PDF or download it later rather than streaming it
+- Download the stored PDF before the 1-hour expiry — after that it's gone
 - Keep HTML under 5MB for best performance
 - Include all CSS inline in your HTML
 - Test with small documents first
@@ -560,6 +642,7 @@ if ($httpCode == 200) {
 - **Images:** Each image becomes one page (great for photo albums)
 
 ### ❌ DON'T:
+- Don't rely on a stored `download_url` after 1 hour — it will be expired and the file deleted within 24 hours
 - Don't use external CSS/JS links (they won't load)
 - Don't generate large reports with quickjob
 - Don't forget to check the X-PDF-Pages header

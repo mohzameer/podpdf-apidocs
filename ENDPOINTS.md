@@ -162,25 +162,6 @@ Provide any publicly accessible HTTPS URL pointing to an HTML page, Markdown fil
 
 If the `Content-Type` is generic (e.g. `text/plain`), the URL file extension is used as a fallback (`.html`, `.htm`, `.md`, `.markdown`, `.png`, `.jpg`, `.jpeg`).
 
-**URL validation constraints:**
-- Must be a valid URL with `https://` scheme (HTTP is rejected).
-- Must not resolve to a private/internal IP (RFC 1918, loopback, link-local, `.local`, `.internal`, `localhost`).
-- Remote server must respond within 10 seconds (configurable via `URL_FETCH_TIMEOUT_SECONDS`).
-- Response body must be ≤ 5 MB.
-- Maximum 5 redirects followed; all redirect targets must also use HTTPS.
-
-**URL-specific error codes:**
-
-| HTTP Status | Code | Cause |
-|-------------|------|-------|
-| `400` | `MISSING_URL` | `url` field absent or empty |
-| `400` | `INVALID_URL` | Not a valid URL, not HTTPS, or resolves to a private IP |
-| `400` | `INPUT_SIZE_EXCEEDED` | Remote response body exceeds 5 MB |
-| `422` | `URL_FETCH_FAILED` | DNS failure, connection refused, or other network error |
-| `422` | `URL_FETCH_TIMEOUT` | Remote server did not respond within 10 seconds |
-| `422` | `URL_FETCH_HTTP_ERROR` | Remote server returned a non-2xx HTTP status |
-| `422` | `URL_CONTENT_TYPE_NOT_SUPPORTED` | Remote `Content-Type` is not HTML, Markdown, or PNG/JPEG |
-
 **cURL example:**
 
 ```bash
@@ -271,6 +252,7 @@ const response = await fetch('/quickjob', {
     - `scale` (number): default `1.0`.
     - `landscape` (boolean): default `false`.
     - `preferCSSPageSize` (boolean): default `false`.
+- `store` (boolean, optional): When `true`, the generated PDF is uploaded to S3 and a JSON response is returned instead of the binary body. See section 1.4.2 for the JSON response format. The signed URL expires after 1 hour. Default: `false`.
 
 **For Images (Multipart):**
 - `input_type` (string, required): Must be `"image"`
@@ -338,7 +320,7 @@ const response = await fetch('/quickjob', {
 
 ### 1.4 Response
 
-#### 1.4.1 Success Response
+#### 1.4.1 Success Response — Binary (default, `store` omitted or `false`)
 
 - **Status:** `200 OK`
 - **Headers:**
@@ -358,7 +340,25 @@ X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 - **For HTML/Markdown:** If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
 - **For Images:** The image count is checked **before conversion** (1 image = 1 page). If the image count exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
 
-#### 1.4.2 Timeout Response
+#### 1.4.2 Success Response — Stored (`store: true`)
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "pages": 42,
+  "truncated": false,
+  "download_url": "https://podpdf-prod-pdfs.s3.eu-central-1.amazonaws.com/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "download_url_expires_at": "2025-12-21T11:30:00.000Z"
+}
+```
+
+The PDF binary is **not** returned. The signed URL expires after **1 hour**, after which the object is inaccessible and will be physically deleted within 24 hours by the S3 lifecycle policy. If the S3 upload fails, `download_url` and `download_url_expires_at` will be `null`.
+
+#### 1.4.3 Timeout Response
 
 - **Status:** `408 Request Timeout`
 
@@ -648,6 +648,8 @@ Authorization: Bearer <jwt_token>
   "created_at": "2025-12-21T10:30:00Z",
   "completed_at": "2025-12-21T10:30:05Z",
   "timeout_occurred": false,
+  "s3_url": "https://podpdf-prod-pdfs.s3.eu-central-1.amazonaws.com/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "s3_url_expires_at": "2025-12-21T11:30:05Z",
   "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "error_message": null
 }
@@ -712,8 +714,8 @@ Authorization: Bearer <jwt_token>
 - `truncated` (boolean, optional): Always `false` (truncation is no longer performed; requests exceeding page limit are rejected).
 - `created_at` (string): ISO 8601 timestamp.
 - `completed_at` (string, optional): ISO 8601 timestamp (present when job completes or fails).
-- `s3_url` (string, optional): Signed URL for S3 object (long jobs only, 1-hour expiry).
-- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when signed URL expires.
+- `s3_url` (string, optional): Pre-signed S3 URL for downloading the PDF. Present on completed quick and long jobs. Expires after **1 hour** — after expiry the object is inaccessible and deleted within 24 hours. `null` if the job has not completed or the S3 upload failed.
+- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when `s3_url` expires.
 - `webhook_delivered` (boolean, optional): Whether webhook was successfully delivered (long jobs only).
 - `webhook_delivered_at` (string, optional): ISO 8601 timestamp when webhook was delivered.
 - `webhook_retry_count` (number, optional): Number of webhook retry attempts (0-3).
@@ -891,7 +893,9 @@ Authorization: Bearer <jwt_token>
       "pages": 42,
       "truncated": false,
       "created_at": "2025-12-21T10:30:00Z",
-      "completed_at": "2025-12-21T10:30:05Z"
+      "completed_at": "2025-12-21T10:30:05Z",
+      "s3_url": "https://podpdf-prod-pdfs.s3.eu-central-1.amazonaws.com/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+      "s3_url_expires_at": "2025-12-21T11:30:05Z"
     },
     {
       "job_id": "8e1b5c89-3d1d-5e25-ac9c-234567890def",
